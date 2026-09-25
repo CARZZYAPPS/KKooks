@@ -667,7 +667,7 @@ function renderAccountPage() {
             <button type="button" class="${state.accountTab === 'favorites' ? 'active' : ''}" data-account-tab="favorites">Favorites</button>
             <button type="button" class="${state.accountTab === 'kklub' ? 'active' : ''}" data-account-tab="kklub">KKlub</button>
             ${canAccessDashboard ? '<button type="button" data-go="admin">Admin dashboard</button>' : ''}
-            ${currentUser ? '<button type="button" data-go="authentication">Sign out / switch</button>' : '<button type="button" data-go="authentication">Sign in</button>'}
+            ${currentUser ? '<button type="button" data-sign-out>Sign out / switch</button>' : '<button type="button" data-go="authentication">Sign in</button>'}
           </nav>
         </aside>
 
@@ -739,10 +739,30 @@ async function signInWithGoogle() {
     provider.setCustomParameters({ prompt: 'select_account' });
     await auth.signInWithPopup(provider);
     showNotice('Signed in with Google.');
+    state.page = 'account';
+    renderApp();
     navigate('account');
   } catch (error) {
     console.error('Google sign-in failed:', error);
     showNotice(error.message || 'Google sign-in failed.');
+  }
+}
+
+async function signOutUser() {
+  if (!auth) {
+    showNotice('Firebase Auth is not configured.');
+    return;
+  }
+
+  try {
+    await auth.signOut();
+    state.page = 'authentication';
+    state.authMode = 'login';
+    renderApp();
+    showNotice('Signed out.');
+  } catch (error) {
+    console.error('Sign out failed:', error);
+    showNotice(error.message || 'Unable to sign out.');
   }
 }
 
@@ -882,6 +902,10 @@ function syncPageForAuthState(user) {
 }
 
 function renderApp() {
+  if (state.page === 'authentication' && auth && auth.currentUser) {
+    state.page = 'account';
+  }
+
   if (state.page === 'account' && (!auth || !auth.currentUser)) {
     state.page = 'authentication';
     state.authMode = 'login';
@@ -1118,6 +1142,10 @@ function bindEvents() {
 
   document.querySelector('[data-google-signin]')?.addEventListener('click', () => {
     signInWithGoogle();
+  });
+
+  document.querySelector('[data-sign-out]')?.addEventListener('click', () => {
+    signOutUser();
   });
 
   document.querySelector('[data-auth-switch]')?.addEventListener('click', () => {
