@@ -13,11 +13,11 @@ const DEFAULT_ROLE_CONFIG = {
 };
 
 const ACCOUNT_ROLES = {
-  USER: 'User',
-  KKLUB: 'KKlub',
-  ADMIN: 'Admin',
-  OWNER: 'Owner',
-  CEO: 'CEO'
+  USER: 'user',
+  KKLUB: 'kklub',
+  ADMIN: 'admin',
+  OWNER: 'owner',
+  CEO: 'ceo'
 };
 
 const PROTECTED_CEO_EMAIL = 'carzzyapps@gmail.com';
@@ -106,7 +106,10 @@ function persistRoleConfig(nextConfig = state.roleConfig) {
       kklubEmails: state.kklubEmails,
       kklubRequests: state.kklubRequests,
       updatedAt: serverTimestamp()
-    }, { merge: true }).catch((error) => console.error('Unable to save role config:', error));
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save role config:', error);
+      showNotice(`Role was not saved online: ${error.message || 'Firebase write failed.'}`);
+    });
   }
 }
 
@@ -189,7 +192,7 @@ function isFirebaseAvailable() {
   return Boolean(db && auth && navigator && navigator.onLine !== false);
 }
 
-async function withFirebaseTimeout(task, timeoutMs = 1500) {
+async function withFirebaseTimeout(task, timeoutMs = 10000) {
   if (!isFirebaseAvailable()) {
     throw new Error('Firebase unavailable');
   }
@@ -258,7 +261,9 @@ async function saveRecipeToFirebase(recipe) {
 }
 
 async function saveSiteContentToFirebase() {
-  if (!db || !navigator.onLine) return;
+  if (!db || !navigator.onLine) {
+    throw new Error('Firebase is unavailable or the device is offline.');
+  }
 
   await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
     ...state.content,
@@ -305,7 +310,10 @@ function persistKklubRequests(list) {
     db.collection('siteContent').doc('main').set({
       kklubRequests: state.kklubRequests,
       updatedAt: serverTimestamp()
-    }, { merge: true }).catch((error) => console.error('Unable to save KKlub requests:', error));
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save KKlub requests:', error);
+      showNotice(`KKlub request was not saved online: ${error.message || 'Firebase write failed.'}`);
+    });
   }
 }
 
@@ -441,7 +449,10 @@ function persistKklubEmails(list) {
     db.collection('siteContent').doc('main').set({
       kklubEmails: state.kklubEmails,
       updatedAt: serverTimestamp()
-    }, { merge: true }).catch((error) => console.error('Unable to save KKlub emails:', error));
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save KKlub emails:', error);
+      showNotice(`KKlub access was not saved online: ${error.message || 'Firebase write failed.'}`);
+    });
   }
 }
 
@@ -503,7 +514,7 @@ function buildHeader() {
             ♡<b>${state.favorites.length || ''}</b>
           </button>
           <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
-            <span class="action-label"><i class="far fa-user" style="color:#00d1b2"></i> ${escapeHtml(accountLabel)}</span>
+            <span class="action-label">♙ ${escapeHtml(accountLabel)}</span>
           </button>
         </div>
       </div>
@@ -1605,12 +1616,12 @@ function bindEvents() {
     state.content = { ...state.content, brand, heroLead: lead, heroAccent: accent, heroDescription: description };
     persistStorage(STORAGE_KEYS.content, state.content);
 
-    if (db) {
-      try {
-        await saveSiteContentToFirebase();
-      } catch (error) {
-        console.error('Unable to save content to Firebase:', error);
-      }
+    try {
+      await saveSiteContentToFirebase();
+    } catch (error) {
+      console.error('Unable to save content to Firebase:', error);
+      showNotice(`Homepage was not saved online: ${error.message || 'Firebase write failed.'}`);
+      return;
     }
 
     showNotice('Homepage content saved.');
