@@ -103,6 +103,8 @@ function persistRoleConfig(nextConfig = state.roleConfig) {
   if (db) {
     db.collection('siteContent').doc('main').set({
       roleConfig: config,
+      kklubEmails: state.kklubEmails,
+      kklubRequests: state.kklubRequests,
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => console.error('Unable to save role config:', error));
   }
@@ -228,6 +230,10 @@ async function loadFirebaseData() {
       if (Array.isArray(firebaseContent.kklubEmails)) {
         persistKklubEmails(firebaseContent.kklubEmails);
       }
+      if (Array.isArray(firebaseContent.kklubRequests)) {
+        state.kklubRequests = firebaseContent.kklubRequests;
+        persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+      }
       persistStorage(STORAGE_KEYS.content, state.content);
     }
   } catch (error) {
@@ -256,7 +262,9 @@ async function saveSiteContentToFirebase() {
 
   await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
     ...state.content,
+    roleConfig: getRoleConfig(),
     kklubEmails: state.kklubEmails,
+    kklubRequests: state.kklubRequests,
     updatedAt: serverTimestamp()
   }, { merge: true }));
 }
@@ -292,6 +300,13 @@ function persistKklubRequests(list) {
     status: request.status || 'pending'
   }])).values()];
   persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+
+  if (db && navigator.onLine !== false) {
+    db.collection('siteContent').doc('main').set({
+      kklubRequests: state.kklubRequests,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch((error) => console.error('Unable to save KKlub requests:', error));
+  }
 }
 
 function canManageKklubRequests(user = null) {
