@@ -819,6 +819,19 @@ function renderAccountPageOld() {
   `;
 }
 
+function syncPageForAuthState(user) {
+  if (user) {
+    state.page = state.page === 'authentication' ? 'account' : (state.page === 'home' ? 'home' : state.page);
+    state.authMode = 'login';
+    return;
+  }
+
+  if (state.page === 'account') {
+    state.page = 'authentication';
+    state.authMode = 'login';
+  }
+}
+
 function renderApp() {
   if (state.page === 'account' && (!auth || !auth.currentUser)) {
     state.page = 'authentication';
@@ -1013,11 +1026,12 @@ function bindEvents() {
         await auth.signInWithEmailAndPassword(email, password);
         showNotice('Signed in successfully.');
       }
-      if (state.page === 'authentication') {
-        navigate('account');
-      } else {
-        navigate('home');
-      }
+
+      const destination = state.page === 'authentication' ? 'account' : 'home';
+      state.page = destination;
+      state.authMode = 'login';
+      renderApp();
+      navigate(destination);
     } catch (error) {
       showNotice(error.message || 'Authentication failed.');
     }
@@ -1102,13 +1116,21 @@ function bindEvents() {
 
 if (auth) {
   auth.onAuthStateChanged((user) => {
-    if (!user || !navigator.onLine || !db || firebaseSyncInFlight) return;
+    syncPageForAuthState(user);
+
+    if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
+      renderApp();
+      return;
+    }
+
     withFirebaseTimeout(() => db.collection('users').doc(user.uid).set({
       email: user.email,
       uid: user.uid,
       role: getUserRoleByEmail(user.email),
       updatedAt: serverTimestamp()
     }, { merge: true })).catch((error) => console.warn('Skipped user profile sync while Firebase is unavailable.', error));
+
+    renderApp();
   });
 }
 
