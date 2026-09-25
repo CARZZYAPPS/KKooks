@@ -5,8 +5,11 @@ const STORAGE_KEYS = {
   content: 'kkooks-site-content'
 };
 
-const OWNER_EMAILS = ['carzzyapps@gmail.com'];
-const ADMIN_EMAILS = ['carzzyapps@gmail.com'];
+const DEFAULT_ROLE_CONFIG = {
+  ownerEmails: [],
+  adminEmails: [],
+  kklubEmails: []
+};
 
 const ACCOUNT_ROLES = {
   USER: 'user',
@@ -61,7 +64,8 @@ const state = {
   favorites: readStorage(STORAGE_KEYS.favorites, []),
   menus: readStorage(STORAGE_KEYS.menus, []),
   content: readStorage(STORAGE_KEYS.content, DEFAULT_CONTENT),
-  kklubEmails: readStorage('kkooks-kklub-emails', [])
+  kklubEmails: readStorage('kkooks-kklub-emails', []),
+  roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG)
 };
 
 let firebaseSyncInFlight = false;
@@ -70,12 +74,40 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function getRoleConfig() {
+  const config = state.roleConfig || DEFAULT_ROLE_CONFIG;
+  return {
+    ownerEmails: Array.isArray(config.ownerEmails) ? config.ownerEmails.map(normalizeEmail).filter(Boolean) : [],
+    adminEmails: Array.isArray(config.adminEmails) ? config.adminEmails.map(normalizeEmail).filter(Boolean) : [],
+    kklubEmails: Array.isArray(config.kklubEmails) ? config.kklubEmails.map(normalizeEmail).filter(Boolean) : []
+  };
+}
+
+function persistRoleConfig(nextConfig = state.roleConfig) {
+  const config = {
+    ownerEmails: [...new Set((nextConfig.ownerEmails || []).map(normalizeEmail).filter(Boolean))],
+    adminEmails: [...new Set((nextConfig.adminEmails || []).map(normalizeEmail).filter(Boolean))],
+    kklubEmails: [...new Set((nextConfig.kklubEmails || []).map(normalizeEmail).filter(Boolean))]
+  };
+
+  state.roleConfig = config;
+  persistStorage('kkooks-role-config', config);
+
+  if (db) {
+    db.collection('siteContent').doc('main').set({
+      roleConfig: config,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch((error) => console.error('Unable to save role config:', error));
+  }
+}
+
 function getUserRoleByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
+  const config = getRoleConfig();
 
-  if (OWNER_EMAILS.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
-  if (ADMIN_EMAILS.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
-  if (getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
+  if (config.ownerEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
+  if (config.adminEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
+  if (config.kklubEmails.includes(normalizedEmail) || getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
   return ACCOUNT_ROLES.USER;
 }
 
@@ -149,6 +181,14 @@ async function loadFirebaseData() {
     if (contentSnapshot.exists) {
       const firebaseContent = contentSnapshot.data();
       state.content = { ...state.content, ...firebaseContent };
+      if (firebaseContent.roleConfig) {
+        state.roleConfig = {
+          ownerEmails: Array.isArray(firebaseContent.roleConfig.ownerEmails) ? firebaseContent.roleConfig.ownerEmails : [],
+          adminEmails: Array.isArray(firebaseContent.roleConfig.adminEmails) ? firebaseContent.roleConfig.adminEmails : [],
+          kklubEmails: Array.isArray(firebaseContent.roleConfig.kklubEmails) ? firebaseContent.roleConfig.kklubEmails : []
+        };
+        persistStorage('kkooks-role-config', state.roleConfig);
+      }
       if (Array.isArray(firebaseContent.kklubEmails)) {
         persistKklubEmails(firebaseContent.kklubEmails);
       }
@@ -186,11 +226,11 @@ async function saveSiteContentToFirebase() {
 }
 
 function isOwnerUser(user = null) {
-  return Boolean(user && user.email && OWNER_EMAILS.includes(normalizeEmail(user.email)));
+  return Boolean(user && user.email && getRoleConfig().ownerEmails.includes(normalizeEmail(user.email)));
 }
 
 function isAdminUser(user = null) {
-  return Boolean(user && user.email && ADMIN_EMAILS.includes(normalizeEmail(user.email)));
+  return Boolean(user && user.email && getRoleConfig().adminEmails.includes(normalizeEmail(user.email)));
 }
 
 function canAccessAdminDashboard(user = null) {
@@ -206,6 +246,10 @@ function getKklubEmails() {
 function persistKklubEmails(list) {
   state.kklubEmails = [...new Set((list || []).map(normalizeEmail).filter(Boolean))].sort();
   persistStorage('kkooks-kklub-emails', state.kklubEmails);
+
+  const config = getRoleConfig();
+  config.kklubEmails = [...new Set(state.kklubEmails)];
+  persistRoleConfig(config);
 
   if (db) {
     db.collection('siteContent').doc('main').set({
@@ -568,6 +612,7 @@ function renderAdminPage() {
   const currentUser = auth ? auth.currentUser : null;
   const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
   const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
+  const roleConfig = getRoleConfig();
 
   if (!canAdmin) {
     return `
@@ -585,6 +630,12 @@ function renderAdminPage() {
       </main>
     `;
   }
+
+  const allManagedRoles = [
+    ...roleConfig.ownerEmails.map((email) => ({ email, role: ACCOUNT_ROLES.OWNER })),
+    ...roleConfig.adminEmails.map((email) => ({ email, role: ACCOUNT_ROLES.ADMIN })),
+    ...roleConfig.kklubEmails.map((email) => ({ email, role: ACCOUNT_ROLES.KKLUB }))
+  ];
 
   return `
     <main class="admin-page">
@@ -619,6 +670,38 @@ function renderAdminPage() {
           </label>
           <button class="primary-button" type="button" data-save-content>Save homepage</button>
         </div>
+
+        ${isOwner ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>User roles</h2>
+            <form data-role-form>
+              <label>
+                User email
+                <input name="email" type="email" placeholder="member@email.com" required />
+              </label>
+              <label>
+                Role
+                <select name="role">
+                  <option value="user">user</option>
+                  <option value="kklub">kklub</option>
+                  <option value="admin">admin</option>
+                  <option value="owner">owner</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Save role</button>
+            </form>
+
+            <div class="mini-grid" style="margin-top: 16px;">
+              ${allManagedRoles.length ? allManagedRoles.map((entry) => `
+                <div class="mini-item">
+                  <strong>${escapeHtml(entry.email)}</strong>
+                  <span>${escapeHtml(entry.role)}</span>
+                  <button type="button" class="secondary-button" data-remove-role="${escapeHtml(entry.email)}">Clear</button>
+                </div>
+              `).join('') : '<p>No roles assigned yet.</p>'}
+            </div>
+          </div>
+        ` : ''}
 
         ${isOwner ? `
           <div class="admin-form" style="margin-top: 24px;">
@@ -938,6 +1021,31 @@ function renderApp() {
   bindEvents();
 }
 
+function assignRoleForEmail(email, roleName) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    showNotice('Enter a valid email address.');
+    return;
+  }
+
+  const config = getRoleConfig();
+  const normalizedRole = String(roleName || 'user');
+
+  config.ownerEmails = config.ownerEmails.filter((item) => item !== normalizedEmail);
+  config.adminEmails = config.adminEmails.filter((item) => item !== normalizedEmail);
+  config.kklubEmails = config.kklubEmails.filter((item) => item !== normalizedEmail);
+
+  if (normalizedRole === ACCOUNT_ROLES.OWNER) config.ownerEmails.push(normalizedEmail);
+  if (normalizedRole === ACCOUNT_ROLES.ADMIN) config.adminEmails.push(normalizedEmail);
+  if (normalizedRole === ACCOUNT_ROLES.KKLUB) config.kklubEmails.push(normalizedEmail);
+
+  persistRoleConfig(config);
+  state.kklubEmails = [...new Set([...state.kklubEmails.filter((item) => item !== normalizedEmail), ...(normalizedRole === ACCOUNT_ROLES.KKLUB ? [normalizedEmail] : [])])].sort();
+  persistStorage('kkooks-kklub-emails', state.kklubEmails);
+  showNotice(`Role updated to ${normalizedRole}.`);
+  renderApp();
+}
+
 function bindEvents() {
   document.querySelectorAll('[data-go]').forEach((button) => {
     button.addEventListener('click', () => navigate(button.dataset.go));
@@ -992,6 +1100,32 @@ function bindEvents() {
 
     input.value = '';
     if (status) status.textContent = 'You are on the list.';
+  });
+
+  document.querySelector('[data-role-form]')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+
+    if (!isOwnerUser(auth ? auth.currentUser : null)) {
+      showNotice('Only owners can manage roles.');
+      return;
+    }
+
+    const formData = new FormData(event.target);
+    const email = normalizeEmail(formData.get('email'));
+    const roleName = String(formData.get('role') || 'user');
+    assignRoleForEmail(email, roleName);
+  });
+
+  document.querySelectorAll('[data-remove-role]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(auth ? auth.currentUser : null)) {
+        showNotice('Only owners can manage roles.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.removeRole);
+      assignRoleForEmail(email, 'user');
+    });
   });
 
   document.querySelector('[data-kklub-form]')?.addEventListener('submit', (event) => {
@@ -1198,6 +1332,14 @@ function bindEvents() {
 if (auth) {
   auth.onAuthStateChanged((user) => {
     syncPageForAuthState(user);
+
+    if (user && !getRoleConfig().ownerEmails.length && !getRoleConfig().adminEmails.length && !getRoleConfig().kklubEmails.length) {
+      persistRoleConfig({
+        ownerEmails: [normalizeEmail(user.email)],
+        adminEmails: [],
+        kklubEmails: []
+      });
+    }
 
     if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
       renderApp();
