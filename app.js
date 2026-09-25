@@ -16,8 +16,11 @@ const ACCOUNT_ROLES = {
   USER: 'user',
   KKLUB: 'kklub',
   ADMIN: 'admin',
-  OWNER: 'owner'
+  OWNER: 'owner',
+  CEO: 'ceo'
 };
+
+const PROTECTED_CEO_EMAIL = 'carzzyapps@gmail.com';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyBJvA5q7ba31qS_ULZLagi8O4bG80vTeRI',
@@ -128,6 +131,7 @@ function getUserRoleByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const config = getRoleConfig();
 
+  if (normalizedEmail === PROTECTED_CEO_EMAIL) return ACCOUNT_ROLES.CEO;
   if (!hasAnyRoleConfig()) return ACCOUNT_ROLES.OWNER;
   if (config.ownerEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
   if (config.adminEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
@@ -258,7 +262,7 @@ async function saveSiteContentToFirebase() {
 }
 
 function isOwnerUser(user = null) {
-  return Boolean(user && user.email && getRoleConfig().ownerEmails.includes(normalizeEmail(user.email)));
+  return Boolean(user && user.email && (getUserRoleByEmail(user.email) === ACCOUNT_ROLES.OWNER || getUserRoleByEmail(user.email) === ACCOUNT_ROLES.CEO));
 }
 
 function isAdminUser(user = null) {
@@ -269,7 +273,7 @@ function canAccessAdminDashboard(user = null) {
   if (!user || !user.email) return false;
   if (!hasAnyRoleConfig()) return true;
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function getKklubEmails() {
@@ -311,11 +315,29 @@ function sendRoleChangeEmail(email, previousRole, nextRole) {
 
   const previousLabel = previousRole && previousRole !== 'user' ? previousRole : 'No access';
   const nextLabel = nextRole && nextRole !== 'user' ? nextRole : 'User';
+  const roleRank = {
+    [ACCOUNT_ROLES.USER]: 0,
+    [ACCOUNT_ROLES.KKLUB]: 1,
+    [ACCOUNT_ROLES.ADMIN]: 2,
+    [ACCOUNT_ROLES.OWNER]: 3
+  };
+  const isUpgrade = (roleRank[nextRole] ?? 0) > (roleRank[previousRole] ?? 0);
+  const isDowngrade = (roleRank[nextRole] ?? 0) < (roleRank[previousRole] ?? 0);
+  const subject = isUpgrade
+    ? 'Congratulations on your new KKooks role'
+    : isDowngrade
+      ? 'An update to your KKooks role'
+      : 'Your KKooks role has changed';
+  const message = isUpgrade
+    ? `Congratulations! Your KKooks role has been upgraded from ${previousLabel} to ${nextLabel}. We are excited to have you take on this new level of access.`
+    : isDowngrade
+      ? `We are sorry to let you know that your KKooks role has changed from ${previousLabel} to ${nextLabel}. Thank you for being part of KKooks.`
+      : `Your KKooks role has changed from ${previousLabel} to ${nextLabel}.`;
 
   sendEmailToRecipients(
     safeEmail,
-    'Your KKooks role has changed',
-    `Hi,\n\nYour KKooks role has been updated from ${previousLabel} to ${nextLabel}.\n\nIf this was not you, please contact the owner team.\n\nBest,\nKKooks team`
+    subject,
+    `Hi,\n\n${message}\n\nBest,\nKKooks team`
   );
 }
 
@@ -411,13 +433,13 @@ function persistKklubEmails(list) {
 function canContributeRecipes(user = null) {
   if (!user || !user.email) return false;
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function isKklubMember(user = null) {
   if (!user || !user.email) return false;
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function navigate(page) {
@@ -790,6 +812,7 @@ function renderAdminPage() {
   }
 
   const allManagedRoles = [
+    { email: PROTECTED_CEO_EMAIL, role: ACCOUNT_ROLES.CEO, protected: true },
     ...roleConfig.ownerEmails.map((email) => ({ email, role: ACCOUNT_ROLES.OWNER })),
     ...roleConfig.adminEmails.map((email) => ({ email, role: ACCOUNT_ROLES.ADMIN })),
     ...roleConfig.kklubEmails.map((email) => ({ email, role: ACCOUNT_ROLES.KKLUB }))
@@ -854,7 +877,7 @@ function renderAdminPage() {
                 <div class="mini-item">
                   <strong>${escapeHtml(entry.email)}</strong>
                   <span>${escapeHtml(entry.role)}</span>
-                  <button type="button" class="secondary-button" data-remove-role="${escapeHtml(entry.email)}">Clear</button>
+                  ${entry.protected ? '<span>Protected</span>' : `<button type="button" class="secondary-button" data-remove-role="${escapeHtml(entry.email)}">Clear</button>`}
                 </div>
               `).join('') : '<p>No roles assigned yet.</p>'}
             </div>
@@ -1210,6 +1233,11 @@ function assignRoleForEmail(email, roleName) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     showNotice('Enter a valid email address.');
+    return;
+  }
+
+  if (normalizedEmail === PROTECTED_CEO_EMAIL) {
+    showNotice('The CEO role is protected and cannot be changed.');
     return;
   }
 
