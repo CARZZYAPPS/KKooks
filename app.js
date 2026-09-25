@@ -64,6 +64,8 @@ const state = {
   kklubEmails: readStorage('kkooks-kklub-emails', [])
 };
 
+let firebaseSyncInFlight = false;
+
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -113,18 +115,37 @@ function showNotice(message) {
   }, 2400);
 }
 
+function isFirebaseAvailable() {
+  return Boolean(db && auth && navigator && navigator.onLine !== false);
+}
+
+async function withFirebaseTimeout(task, timeoutMs = 1500) {
+  if (!isFirebaseAvailable()) {
+    throw new Error('Firebase unavailable');
+  }
+
+  return Promise.race([
+    task(),
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error('Firebase request timed out')), timeoutMs);
+    })
+  ]);
+}
+
 async function loadFirebaseData() {
-  if (!db) return;
+  if (!isFirebaseAvailable() || firebaseSyncInFlight) return;
+
+  firebaseSyncInFlight = true;
 
   try {
-    const recipesSnapshot = await db.collection('recipes').where('status', '==', 'published').get();
+    const recipesSnapshot = await withFirebaseTimeout(() => db.collection('recipes').where('status', '==', 'published').get());
     const recipes = recipesSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     if (recipes.length) {
       state.recipes = recipes;
       persistStorage(STORAGE_KEYS.recipes, recipes);
     }
 
-    const contentSnapshot = await db.collection('siteContent').doc('main').get();
+    const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
     if (contentSnapshot.exists) {
       const firebaseContent = contentSnapshot.data();
       state.content = { ...state.content, ...firebaseContent };
@@ -134,32 +155,34 @@ async function loadFirebaseData() {
       persistStorage(STORAGE_KEYS.content, state.content);
     }
   } catch (error) {
-    console.error('Unable to load Firebase data:', error);
+    console.warn('Firebase sync skipped because the client is offline or slow.', error);
+  } finally {
+    firebaseSyncInFlight = false;
   }
 }
 
 async function saveRecipeToFirebase(recipe) {
-  if (!db || !auth || !auth.currentUser) return recipe;
+  if (!db || !auth || !auth.currentUser || !navigator.onLine) return recipe;
 
-  const docRef = await db.collection('recipes').add({
+  const docRef = await withFirebaseTimeout(() => db.collection('recipes').add({
     ...recipe,
     status: recipe.status || 'published',
     ownerId: auth.currentUser.uid,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
-  });
+  }));
 
   return { ...recipe, id: docRef.id };
 }
 
 async function saveSiteContentToFirebase() {
-  if (!db) return;
+  if (!db || !navigator.onLine) return;
 
-  await db.collection('siteContent').doc('main').set({
+  await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
     ...state.content,
     kklubEmails: state.kklubEmails,
     updatedAt: serverTimestamp()
-  }, { merge: true });
+  }, { merge: true }));
 }
 
 function isOwnerUser(user = null) {
@@ -218,7 +241,14 @@ function getFilteredRecipes() {
   });
 }
 
+function getAccountDestination() {
+  return auth && auth.currentUser ? 'account' : 'authentication';
+}
+
 function buildHeader() {
+  const accountDestination = getAccountDestination();
+  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+
   return `
     <header class="site-header">
       <div class="header-main">
@@ -235,8 +265,8 @@ function buildHeader() {
           <button type="button" title="Favorites" aria-label="Favorites" data-go="recipes">
             ♡<b>${state.favorites.length || ''}</b>
           </button>
-          <button type="button" title="Account" aria-label="Account" data-go="account">
-            <span class="action-label">♙ Account</span>
+          <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
+            <span class="action-label">♙ ${escapeHtml(accountLabel)}</span>
           </button>
         </div>
       </div>
@@ -244,13 +274,16 @@ function buildHeader() {
       <nav>
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
-        <button type="button" data-go="account">Account</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
       </nav>
     </header>
   `;
 }
 
 function buildFooter() {
+  const accountDestination = getAccountDestination();
+  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+
   return `
     <footer>
       <div class="footer-brand">
@@ -276,12 +309,12 @@ function buildFooter() {
         <h4>Explore</h4>
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
-        <button type="button" data-go="account">Account</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
       </div>
 
       <div>
         <h4>Account</h4>
-        <button type="button" data-go="account">Log in</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
       </div>
 
@@ -641,6 +674,29 @@ function renderAccountPage() {
   `;
 }
 
+async function signInWithGoogle() {
+  if (!auth || !window.firebase || !window.firebase.auth) {
+    showNotice('Firebase Auth is not configured.');
+    return;
+  }
+
+  if (!navigator.onLine) {
+    showNotice('You appear to be offline. Reconnect to sign in with Google.');
+    return;
+  }
+
+  try {
+    const provider = new window.firebase.auth.GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: 'select_account' });
+    await auth.signInWithPopup(provider);
+    showNotice('Signed in with Google.');
+    navigate('account');
+  } catch (error) {
+    console.error('Google sign-in failed:', error);
+    showNotice(error.message || 'Google sign-in failed.');
+  }
+}
+
 function renderAuthenticationPage() {
   const authConfig = {
     login: {
@@ -684,6 +740,18 @@ function renderAuthenticationPage() {
           <button type="button" class="${state.authMode === 'signup' ? 'active' : ''}" data-auth-mode="signup">Create</button>
           <button type="button" class="${state.authMode === 'forgot' ? 'active' : ''}" data-auth-mode="forgot">Forgot password</button>
         </div>
+
+        ${state.authMode !== 'forgot' ? `
+          <button type="button" data-google-signin style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin:12px 0 8px;padding:13px 16px;border:1px solid rgba(146,161,153,0.28);border-radius:12px;background:#ffffff;color:#1f1f1f;font-weight:700;cursor:pointer;box-shadow:0 8px 20px rgba(0,0,0,0.12);">
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.72 1.23 9.23 3.64l6.85-6.85C35.94 2.71 30.48 0 24 0 14.64 0 6.55 5.38 2.56 13.22l7.98 6.2C12.19 14.42 17.52 9.5 24 9.5Z"/>
+              <path fill="#4285F4" d="M46.5 24.55c0-1.64-.15-3.21-.42-4.73H24v9h12.67c-.54 2.93-2.2 5.41-4.68 7.09l7.58 5.88c4.41-4.06 7.93-10.06 7.93-17.24Z"/>
+              <path fill="#FBBC05" d="M32 35.8c-2.3 1.54-5.26 2.45-8 2.45-6.48 0-11.99-4.37-13.95-10.25l-8.04 6.24C4.96 42.36 13.08 48 24 48c7.35 0 13.52-2.42 18.02-6.57l-10.02-5.63Z"/>
+              <path fill="#34A853" d="M11.05 28c-.63-1.86-.98-3.85-.98-5.99s.35-4.13.98-5.99L2.56 13.22A23.89 23.89 0 0 0 0 22c0 3.83.92 7.45 2.56 10.78l8.49-6.78Z"/>
+            </svg>
+            Continue with Google
+          </button>
+        ` : ''}
 
         ${state.authMode === 'forgot' ? `
           <form data-forgot-form>
@@ -751,7 +819,25 @@ function renderAccountPageOld() {
   `;
 }
 
+function syncPageForAuthState(user) {
+  if (user) {
+    state.page = state.page === 'authentication' ? 'account' : (state.page === 'home' ? 'home' : state.page);
+    state.authMode = 'login';
+    return;
+  }
+
+  if (state.page === 'account') {
+    state.page = 'authentication';
+    state.authMode = 'login';
+  }
+}
+
 function renderApp() {
+  if (state.page === 'account' && (!auth || !auth.currentUser)) {
+    state.page = 'authentication';
+    state.authMode = 'login';
+  }
+
   const pageMarkup = {
     home: renderHomePage,
     recipes: renderRecipesPage,
@@ -940,11 +1026,12 @@ function bindEvents() {
         await auth.signInWithEmailAndPassword(email, password);
         showNotice('Signed in successfully.');
       }
-      if (state.page === 'authentication') {
-        navigate('account');
-      } else {
-        navigate('home');
-      }
+
+      const destination = state.page === 'authentication' ? 'account' : 'home';
+      state.page = destination;
+      state.authMode = 'login';
+      renderApp();
+      navigate(destination);
     } catch (error) {
       showNotice(error.message || 'Authentication failed.');
     }
@@ -974,6 +1061,10 @@ function bindEvents() {
     } catch (error) {
       showNotice(error.message || 'Unable to send reset email.');
     }
+  });
+
+  document.querySelector('[data-google-signin]')?.addEventListener('click', () => {
+    signInWithGoogle();
   });
 
   document.querySelector('[data-auth-switch]')?.addEventListener('click', () => {
@@ -1025,16 +1116,29 @@ function bindEvents() {
 
 if (auth) {
   auth.onAuthStateChanged((user) => {
-    if (!user) return;
-    if (db) {
-      db.collection('users').doc(user.uid).set({
-        email: user.email,
-        uid: user.uid,
-        role: getUserRoleByEmail(user.email),
-        updatedAt: serverTimestamp()
-      }, { merge: true }).catch((error) => console.error('Unable to save user profile:', error));
+    syncPageForAuthState(user);
+
+    if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
+      renderApp();
+      return;
     }
+
+    withFirebaseTimeout(() => db.collection('users').doc(user.uid).set({
+      email: user.email,
+      uid: user.uid,
+      role: getUserRoleByEmail(user.email),
+      updatedAt: serverTimestamp()
+    }, { merge: true })).catch((error) => console.warn('Skipped user profile sync while Firebase is unavailable.', error));
+
+    renderApp();
   });
 }
 
-loadFirebaseData().finally(() => renderApp());
+window.addEventListener('offline', () => {
+  firebaseSyncInFlight = false;
+});
+
+renderApp();
+if (navigator.onLine) {
+  loadFirebaseData().catch((error) => console.warn('Firebase sync skipped.', error));
+}
