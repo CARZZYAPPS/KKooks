@@ -102,10 +102,30 @@ function persistRoleConfig(nextConfig = state.roleConfig) {
   }
 }
 
+function hasAnyRoleConfig() {
+  const config = getRoleConfig();
+  return Boolean(config.ownerEmails.length || config.adminEmails.length || config.kklubEmails.length);
+}
+
+function ensureCurrentUserRole(user = getCurrentUser()) {
+  if (!user || !user.email) return;
+
+  const config = getRoleConfig();
+  const normalizedEmail = normalizeEmail(user.email);
+  if (hasAnyRoleConfig()) return;
+
+  persistRoleConfig({
+    ownerEmails: [normalizedEmail],
+    adminEmails: [],
+    kklubEmails: []
+  });
+}
+
 function getUserRoleByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
   const config = getRoleConfig();
 
+  if (!hasAnyRoleConfig()) return ACCOUNT_ROLES.OWNER;
   if (config.ownerEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
   if (config.adminEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
   if (config.kklubEmails.includes(normalizedEmail) || getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
@@ -236,6 +256,7 @@ function isAdminUser(user = null) {
 
 function canAccessAdminDashboard(user = null) {
   if (!user || !user.email) return false;
+  if (!hasAnyRoleConfig()) return true;
   const role = getUserRoleByEmail(user.email);
   return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
 }
@@ -830,6 +851,7 @@ async function signInWithGoogle() {
     provider.setCustomParameters({ prompt: 'select_account' });
     const result = await auth.signInWithPopup(provider);
     state.currentUser = result ? result.user || auth.currentUser : null;
+    ensureCurrentUserRole(state.currentUser);
     showNotice('Signed in with Google.');
     state.page = 'account';
     renderApp();
@@ -1253,6 +1275,7 @@ function bindEvents() {
 
       state.currentUser = signedInUser ? signedInUser.user || signedInUser : getCurrentUser();
       state.currentUser = signedInUser ? signedInUser.user || signedInUser : null;
+      ensureCurrentUserRole(state.currentUser);
       const destination = state.page === 'authentication' ? 'account' : 'home';
       state.page = destination;
       state.authMode = 'login';
@@ -1349,12 +1372,8 @@ if (auth) {
     state.currentUser = user || null;
     syncPageForAuthState(user);
 
-    if (user && !getRoleConfig().ownerEmails.length && !getRoleConfig().adminEmails.length && !getRoleConfig().kklubEmails.length) {
-      persistRoleConfig({
-        ownerEmails: [normalizeEmail(user.email)],
-        adminEmails: [],
-        kklubEmails: []
-      });
+    if (user) {
+      ensureCurrentUserRole(user);
     }
 
     if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
