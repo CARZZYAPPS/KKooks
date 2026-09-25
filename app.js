@@ -37,6 +37,17 @@ const firebaseApp = window.firebase && window.firebase.apps && window.firebase.a
 const auth = firebaseApp ? window.firebase.auth() : null;
 const db = firebaseApp ? window.firebase.firestore() : null;
 
+if (db) {
+  try {
+    db.settings({
+      experimentalForceLongPolling: true,
+      useFetchStreams: false
+    });
+  } catch (error) {
+    console.warn('Firestore transport settings could not be applied.', error);
+  }
+}
+
 const serverTimestamp = () => (window.firebase && window.firebase.firestore ? window.firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString());
 
 const DEFAULT_CONTENT = {
@@ -48,7 +59,7 @@ const DEFAULT_CONTENT = {
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=900&q=85';
 const PAGE_MAP = {
-  home: '/',
+  home: 'index.html',
   recipes: 'recipes.html',
   shop: 'shop.html',
   account: 'account.html',
@@ -71,11 +82,13 @@ const state = {
   content: readStorage(STORAGE_KEYS.content, DEFAULT_CONTENT),
   kklubEmails: readStorage('kkooks-kklub-emails', []),
   roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG),
-  kklubRequests: readStorage(STORAGE_KEYS.kklubRequests, [])
+  kklubRequests: readStorage(STORAGE_KEYS.kklubRequests, []),
+  loading: false
 };
 
 let firebaseSyncInFlight = false;
 let authStateReady = false;
+let loadingTimer = null;
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -180,6 +193,28 @@ function showNotice(message) {
   }, 2400);
 }
 
+function setLoading(isLoading) {
+  state.loading = Boolean(isLoading);
+  window.clearInterval(loadingTimer);
+  loadingTimer = null;
+
+  const indicator = document.querySelector('[data-loading-indicator]');
+  if (!indicator) return;
+
+  indicator.hidden = !state.loading;
+  if (!state.loading) return;
+
+  let dotCount = 0;
+  const label = indicator.querySelector('[data-loading-label]');
+  const updateLabel = () => {
+    if (label) label.textContent = `Loading${'.'.repeat(dotCount)}`;
+    dotCount = (dotCount + 1) % 4;
+  };
+
+  updateLabel();
+  loadingTimer = window.setInterval(updateLabel, 500);
+}
+
 function showInlineAuthError(message) {
   const errorNode = document.querySelector('[data-auth-error]');
   if (!errorNode) return;
@@ -192,7 +227,7 @@ function isFirebaseAvailable() {
   return Boolean(db && auth && navigator && navigator.onLine !== false);
 }
 
-async function withFirebaseTimeout(task, timeoutMs = 10000) {
+async function withFirebaseTimeout(task, timeoutMs = 30000) {
   if (!isFirebaseAvailable()) {
     throw new Error('Firebase unavailable');
   }
@@ -514,7 +549,7 @@ function buildHeader() {
             ♡<b>${state.favorites.length || ''}</b>
           </button>
           <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
-            <span class="action-label"><i class="far fa-user" style="color:#00d1b2"></i> ${escapeHtml(accountLabel)}</span>
+            <span class="action-label">♙ ${escapeHtml(accountLabel)}</span>
           </button>
         </div>
       </div>
@@ -1246,6 +1281,10 @@ function renderApp() {
 
   document.querySelector('#app').innerHTML = `
     <div class="site-shell">
+      <div class="loading-indicator" data-loading-indicator ${state.loading ? '' : 'hidden'} role="status" aria-live="polite">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span data-loading-label>Loading.</span>
+      </div>
       ${buildHeader()}
       ${pageMarkup()}
       ${buildFooter()}
@@ -1485,13 +1524,22 @@ function bindEvents() {
       ...recipe
     };
 
-    if (db && auth && auth.currentUser && navigator.onLine !== false) {
-      try {
+    setLoading(true);
+    try {
+      if (db && auth && auth.currentUser && navigator.onLine !== false) {
         savedRecipe = await saveRecipeToFirebase({ ...recipe, ownerId: auth.currentUser.uid });
-      } catch (error) {
-        console.error('Unable to publish recipe to Firebase; saving locally instead:', error);
-        showNotice('Online publishing failed, so the recipe was saved on this device.');
       }
+    } catch (error) {
+      console.error('Unable to publish recipe to Firebase; saving locally instead:', error);
+      showNotice('Online publishing failed, so the recipe was saved on this device.');
+    } finally {
+      setLoading(false);
+    }
+
+    if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
+      showNotice('Recipe published.');
+    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
+      showNotice('Recipe saved.');
     }
 
     state.recipes.unshift(savedRecipe);
@@ -1616,12 +1664,15 @@ function bindEvents() {
     state.content = { ...state.content, brand, heroLead: lead, heroAccent: accent, heroDescription: description };
     persistStorage(STORAGE_KEYS.content, state.content);
 
+    setLoading(true);
     try {
       await saveSiteContentToFirebase();
     } catch (error) {
       console.error('Unable to save content to Firebase:', error);
       showNotice(`Homepage was not saved online: ${error.message || 'Firebase write failed.'}`);
       return;
+    } finally {
+      setLoading(false);
     }
 
     showNotice('Homepage content saved.');
@@ -1660,5 +1711,8 @@ window.addEventListener('offline', () => {
 
 renderApp();
 if (navigator.onLine) {
-  loadFirebaseData().catch((error) => console.warn('Firebase sync skipped.', error));
+  setLoading(true);
+  loadFirebaseData()
+    .catch((error) => console.warn('Firebase sync skipped.', error))
+    .finally(() => setLoading(false));
 }
