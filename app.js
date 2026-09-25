@@ -48,7 +48,7 @@ const DEFAULT_CONTENT = {
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=900&q=85';
 const PAGE_MAP = {
-  home: 'index.html',
+  home: '/',
   recipes: 'recipes.html',
   shop: 'shop.html',
   account: 'account.html',
