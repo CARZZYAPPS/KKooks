@@ -70,6 +70,7 @@ const state = {
 };
 
 let firebaseSyncInFlight = false;
+let authStateReady = false;
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -871,6 +872,7 @@ async function signOutUser() {
   try {
     await auth.signOut();
     state.currentUser = null;
+    authStateReady = true;
     state.page = 'authentication';
     state.authMode = 'login';
     renderApp();
@@ -1004,13 +1006,15 @@ function renderAccountPageOld() {
 }
 
 function syncPageForAuthState(user) {
+  authStateReady = true;
+
   if (user) {
     state.page = state.page === 'authentication' ? 'account' : (state.page === 'home' ? 'home' : state.page);
     state.authMode = 'login';
     return;
   }
 
-  if (state.page === 'account') {
+  if (state.page === 'account' || state.page === 'admin') {
     state.page = 'authentication';
     state.authMode = 'login';
   }
@@ -1019,16 +1023,16 @@ function syncPageForAuthState(user) {
 function renderApp() {
   const currentUser = getCurrentUser();
 
-  if (state.page === 'authentication' && currentUser) {
+  if (authStateReady && state.page === 'authentication' && currentUser) {
     state.page = 'account';
   }
 
-  if (state.page === 'account' && !currentUser) {
+  if (authStateReady && state.page === 'account' && !currentUser) {
     state.page = 'authentication';
     state.authMode = 'login';
   }
 
-  if (state.page === 'admin' && (!currentUser || !canAccessAdminDashboard(currentUser))) {
+  if (authStateReady && state.page === 'admin' && (!currentUser || !canAccessAdminDashboard(currentUser))) {
     state.page = 'account';
   }
 
