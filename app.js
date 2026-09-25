@@ -60,6 +60,7 @@ const state = {
   query: '',
   authMode: 'login',
   accountTab: 'overview',
+  currentUser: null,
   recipes: readStorage(STORAGE_KEYS.recipes, []),
   favorites: readStorage(STORAGE_KEYS.favorites, []),
   menus: readStorage(STORAGE_KEYS.menus, []),
@@ -285,14 +286,20 @@ function getFilteredRecipes() {
   });
 }
 
+function getCurrentUser() {
+  if (auth && auth.currentUser) return auth.currentUser;
+  return state.currentUser;
+}
+
 function getAccountDestination() {
-  return auth && auth.currentUser ? 'account' : 'authentication';
+  return getCurrentUser() ? 'account' : 'authentication';
 }
 
 function buildHeader() {
+  const currentUser = getCurrentUser();
   const accountDestination = getAccountDestination();
-  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
-  const canViewAdmin = Boolean(auth && auth.currentUser && canAccessAdminDashboard(auth.currentUser));
+  const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <header class="site-header">
@@ -327,9 +334,10 @@ function buildHeader() {
 }
 
 function buildFooter() {
+  const currentUser = getCurrentUser();
   const accountDestination = getAccountDestination();
-  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
-  const canViewAdmin = Boolean(auth && auth.currentUser && canAccessAdminDashboard(auth.currentUser));
+  const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <footer>
@@ -609,7 +617,7 @@ function renderShopPage() {
 }
 
 function renderAdminPage() {
-  const currentUser = auth ? auth.currentUser : null;
+  const currentUser = getCurrentUser();
   const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
   const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
   const roleConfig = getRoleConfig();
@@ -730,7 +738,7 @@ function renderAdminPage() {
 }
 
 function renderAccountPage() {
-  const currentUser = auth ? auth.currentUser : null;
+  const currentUser = getCurrentUser();
   const role = currentUser && currentUser.email ? getUserRoleByEmail(currentUser.email) : 'guest';
   const kklubUnlocked = isKklubMember(currentUser);
   const canAccessDashboard = Boolean(currentUser && canAccessAdminDashboard(currentUser));
@@ -820,7 +828,8 @@ async function signInWithGoogle() {
   try {
     const provider = new window.firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
-    await auth.signInWithPopup(provider);
+    const result = await auth.signInWithPopup(provider);
+    state.currentUser = result ? result.user || auth.currentUser : null;
     showNotice('Signed in with Google.');
     state.page = 'account';
     renderApp();
@@ -839,6 +848,7 @@ async function signOutUser() {
 
   try {
     await auth.signOut();
+    state.currentUser = null;
     state.page = 'authentication';
     state.authMode = 'login';
     renderApp();
@@ -985,16 +995,18 @@ function syncPageForAuthState(user) {
 }
 
 function renderApp() {
-  if (state.page === 'authentication' && auth && auth.currentUser) {
+  const currentUser = getCurrentUser();
+
+  if (state.page === 'authentication' && currentUser) {
     state.page = 'account';
   }
 
-  if (state.page === 'account' && (!auth || !auth.currentUser)) {
+  if (state.page === 'account' && !currentUser) {
     state.page = 'authentication';
     state.authMode = 'login';
   }
 
-  if (state.page === 'admin' && (!auth || !auth.currentUser || !canAccessAdminDashboard(auth.currentUser))) {
+  if (state.page === 'admin' && (!currentUser || !canAccessAdminDashboard(currentUser))) {
     state.page = 'account';
   }
 
@@ -1105,7 +1117,7 @@ function bindEvents() {
   document.querySelector('[data-role-form]')?.addEventListener('submit', (event) => {
     event.preventDefault();
 
-    if (!isOwnerUser(auth ? auth.currentUser : null)) {
+    if (!isOwnerUser(getCurrentUser())) {
       showNotice('Only owners can manage roles.');
       return;
     }
@@ -1118,7 +1130,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-remove-role]').forEach((button) => {
     button.addEventListener('click', () => {
-      if (!isOwnerUser(auth ? auth.currentUser : null)) {
+      if (!isOwnerUser(getCurrentUser())) {
         showNotice('Only owners can manage roles.');
         return;
       }
@@ -1131,7 +1143,7 @@ function bindEvents() {
   document.querySelector('[data-kklub-form]')?.addEventListener('submit', (event) => {
     event.preventDefault();
 
-    if (!isOwnerUser(auth ? auth.currentUser : null)) {
+    if (!isOwnerUser(getCurrentUser())) {
       showNotice('Only owners can manage KKlub invites.');
       return;
     }
@@ -1156,7 +1168,7 @@ function bindEvents() {
 
   document.querySelectorAll('[data-remove-kklub]').forEach((button) => {
     button.addEventListener('click', () => {
-      if (!isOwnerUser(auth ? auth.currentUser : null)) {
+      if (!isOwnerUser(getCurrentUser())) {
         showNotice('Only owners can manage KKlub invites.');
         return;
       }
@@ -1173,7 +1185,7 @@ function bindEvents() {
   document.querySelector('[data-create-form]')?.addEventListener('submit', async (event) => {
     event.preventDefault();
 
-    const currentUser = auth ? auth.currentUser : null;
+    const currentUser = getCurrentUser();
     if (!currentUser || !canContributeRecipes(currentUser)) {
       showNotice('Invite-only: only admins or KKlub members can contribute recipes.');
       return;
@@ -1230,14 +1242,17 @@ function bindEvents() {
     }
 
     try {
+      let signedInUser = null;
       if (state.authMode === 'signup') {
-        await auth.createUserWithEmailAndPassword(email, password);
+        signedInUser = await auth.createUserWithEmailAndPassword(email, password);
         showNotice('Account created.');
       } else if (state.authMode === 'login') {
-        await auth.signInWithEmailAndPassword(email, password);
+        signedInUser = await auth.signInWithEmailAndPassword(email, password);
         showNotice('Signed in successfully.');
       }
 
+      state.currentUser = signedInUser ? signedInUser.user || signedInUser : getCurrentUser();
+      state.currentUser = signedInUser ? signedInUser.user || signedInUser : null;
       const destination = state.page === 'authentication' ? 'account' : 'home';
       state.page = destination;
       state.authMode = 'login';
@@ -1331,6 +1346,7 @@ function bindEvents() {
 
 if (auth) {
   auth.onAuthStateChanged((user) => {
+    state.currentUser = user || null;
     syncPageForAuthState(user);
 
     if (user && !getRoleConfig().ownerEmails.length && !getRoleConfig().adminEmails.length && !getRoleConfig().kklubEmails.length) {
