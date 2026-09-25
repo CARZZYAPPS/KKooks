@@ -17,7 +17,7 @@ const ACCOUNT_ROLES = {
   KKLUB: 'kklub',
   ADMIN: 'admin',
   OWNER: 'owner',
-  CEO: 'ceo'
+  CEO: 'CEO'
 };
 
 const PROTECTED_CEO_EMAIL = 'carzzyapps@gmail.com';
@@ -503,7 +503,7 @@ function buildHeader() {
             ♡<b>${state.favorites.length || ''}</b>
           </button>
           <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
-            <span class="action-label">♙ ${escapeHtml(accountLabel)}</span>
+            <span class="action-label"><i class="far fa-user" style="color:#00d1b2"></i> ${escapeHtml(accountLabel)}</span>
           </button>
         </div>
       </div>
