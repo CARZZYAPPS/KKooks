@@ -1412,7 +1412,10 @@ function bindEvents() {
     const image = String(formData.get('image') || '').trim() || FALLBACK_IMAGE;
     const description = String(formData.get('description') || '').trim();
 
-    if (!title) return;
+    if (!title) {
+      showNotice('Enter a recipe name.');
+      return;
+    }
 
     const recipe = {
       title,
@@ -1423,18 +1426,27 @@ function bindEvents() {
       status: 'published'
     };
 
-    if (db && auth && auth.currentUser) {
-      const saved = await saveRecipeToFirebase({ ...recipe, ownerId: auth.currentUser.uid });
-      state.recipes.unshift(saved);
-    } else {
-      state.recipes.unshift({
-        id: `recipe-${Date.now()}`,
-        ...recipe
-      });
+    let savedRecipe = {
+      id: `recipe-${Date.now()}`,
+      ...recipe
+    };
+
+    if (db && auth && auth.currentUser && navigator.onLine !== false) {
+      try {
+        savedRecipe = await saveRecipeToFirebase({ ...recipe, ownerId: auth.currentUser.uid });
+      } catch (error) {
+        console.error('Unable to publish recipe to Firebase; saving locally instead:', error);
+        showNotice('Online publishing failed, so the recipe was saved on this device.');
+      }
     }
 
+    state.recipes.unshift(savedRecipe);
     persistStorage(STORAGE_KEYS.recipes, state.recipes);
-    showNotice('Recipe saved.');
+    if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
+      showNotice('Recipe published.');
+    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
+      showNotice('Recipe saved.');
+    }
     navigate('recipes');
   });
 
