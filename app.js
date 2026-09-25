@@ -2,7 +2,8 @@ const STORAGE_KEYS = {
   recipes: 'kkooks-created-recipes',
   favorites: 'kkooks-favorites',
   menus: 'kkooks-menus',
-  content: 'kkooks-site-content'
+  content: 'kkooks-site-content',
+  kklubRequests: 'kkooks-kklub-requests'
 };
 
 const DEFAULT_ROLE_CONFIG = {
@@ -66,7 +67,8 @@ const state = {
   menus: readStorage(STORAGE_KEYS.menus, []),
   content: readStorage(STORAGE_KEYS.content, DEFAULT_CONTENT),
   kklubEmails: readStorage('kkooks-kklub-emails', []),
-  roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG)
+  roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG),
+  kklubRequests: readStorage(STORAGE_KEYS.kklubRequests, [])
 };
 
 let firebaseSyncInFlight = false;
@@ -272,6 +274,122 @@ function canAccessAdminDashboard(user = null) {
 
 function getKklubEmails() {
   return state.kklubEmails || [];
+}
+
+function getKklubRequests() {
+  return Array.isArray(state.kklubRequests) ? state.kklubRequests : [];
+}
+
+function persistKklubRequests(list) {
+  state.kklubRequests = [...new Map((list || []).map((request) => [normalizeEmail(request.email), {
+    email: normalizeEmail(request.email),
+    requestedBy: normalizeEmail(request.requestedBy || ''),
+    requestedAt: request.requestedAt || new Date().toISOString(),
+    status: request.status || 'pending'
+  }])).values()];
+  persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+}
+
+function canManageKklubRequests(user = null) {
+  return Boolean(user && (isOwnerUser(user) || isAdminUser(user)));
+}
+
+function sendEmailToRecipients(recipients, subject, body) {
+  const targetEmails = (Array.isArray(recipients) ? recipients : [recipients])
+    .map(normalizeEmail)
+    .filter(Boolean);
+
+  if (!targetEmails.length) return;
+
+  const mailto = `mailto:${targetEmails.join(',')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
+}
+
+function sendRoleChangeEmail(email, previousRole, nextRole) {
+  const safeEmail = normalizeEmail(email);
+  if (!safeEmail) return;
+
+  const previousLabel = previousRole && previousRole !== 'user' ? previousRole : 'No access';
+  const nextLabel = nextRole && nextRole !== 'user' ? nextRole : 'User';
+
+  sendEmailToRecipients(
+    safeEmail,
+    'Your KKooks role has changed',
+    `Hi,\n\nYour KKooks role has been updated from ${previousLabel} to ${nextLabel}.\n\nIf this was not you, please contact the owner team.\n\nBest,\nKKooks team`
+  );
+}
+
+function requestKklubApproval(email, requestedBy) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedRequester = normalizeEmail(requestedBy);
+
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    showNotice('Enter a valid email address.');
+    return;
+  }
+
+  const pendingRequests = getKklubRequests();
+  if (pendingRequests.some((request) => normalizeEmail(request.email) === normalizedEmail && request.status !== 'rejected')) {
+    showNotice('A KKlub approval request is already pending for that email.');
+    return;
+  }
+
+  const nextRequest = {
+    email: normalizedEmail,
+    requestedBy: normalizedRequester,
+    requestedAt: new Date().toISOString(),
+    status: 'pending'
+  };
+
+  persistKklubRequests([...pendingRequests, nextRequest]);
+
+  const ownerEmails = getRoleConfig().ownerEmails;
+  sendEmailToRecipients(
+    ownerEmails,
+    'KKlub approval requested',
+    `A KKlub access request was submitted for ${normalizedEmail}.\nRequested by: ${normalizedRequester || 'Unknown admin'}.\nPlease open the admin dashboard and approve or reject the request.`
+  );
+
+  showNotice('KKlub access request sent to owners for approval.');
+  renderApp();
+}
+
+function approveKklubRequest(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const pendingRequests = getKklubRequests();
+  const matched = pendingRequests.find((request) => normalizeEmail(request.email) === normalizedEmail && request.status !== 'rejected');
+
+  if (!matched) {
+    showNotice('No pending KKlub request was found for that email.');
+    return;
+  }
+
+  const previousRole = getUserRoleByEmail(normalizedEmail);
+  assignRoleForEmail(normalizedEmail, ACCOUNT_ROLES.KKLUB);
+  persistKklubRequests(pendingRequests.filter((request) => normalizeEmail(request.email) !== normalizedEmail));
+  sendRoleChangeEmail(normalizedEmail, previousRole, ACCOUNT_ROLES.KKLUB);
+  showNotice('KKlub request approved.');
+  renderApp();
+}
+
+function rejectKklubRequest(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const nextRequests = getKklubRequests().map((request) => normalizeEmail(request.email) === normalizedEmail ? { ...request, status: 'rejected' } : request);
+  persistKklubRequests(nextRequests);
+
+  const currentRole = getUserRoleByEmail(normalizedEmail);
+  if (currentRole === ACCOUNT_ROLES.KKLUB) {
+    assignRoleForEmail(normalizedEmail, ACCOUNT_ROLES.USER);
+  }
+
+  sendEmailToRecipients(
+    normalizedEmail,
+    'KKlub request update',
+    'Your KKooks KKlub request was not approved at this time. You will remain on your current access level unless another change is made.'
+  );
+
+  showNotice('KKlub request rejected.');
+  renderApp();
 }
 
 function persistKklubEmails(list) {
@@ -650,7 +768,9 @@ function renderAdminPage() {
   const currentUser = getCurrentUser();
   const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
   const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
+  const isAdmin = Boolean(currentUser && isAdminUser(currentUser));
   const roleConfig = getRoleConfig();
+  const pendingKklubRequests = getKklubRequests().filter((request) => request.status !== 'rejected');
 
   if (!canAdmin) {
     return `
@@ -741,7 +861,22 @@ function renderAdminPage() {
           </div>
         ` : ''}
 
-        ${isOwner ? `
+        ${(isOwner || isAdmin) ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>KKlub requests</h2>
+            ${pendingKklubRequests.length ? pendingKklubRequests.map((request) => `
+              <div class="mini-item">
+                <strong>${escapeHtml(request.email)}</strong>
+                <div class="inline-actions">
+                  ${isOwner ? `<button type="button" class="primary-button" data-approve-kklub-request="${escapeHtml(request.email)}">Approve</button>` : ''}
+                  ${isOwner ? `<button type="button" class="secondary-button" data-reject-kklub-request="${escapeHtml(request.email)}">Reject</button>` : ''}
+                </div>
+              </div>
+            `).join('') : '<p>No pending KKlub requests.</p>'}
+          </div>
+        ` : ''}
+
+        ${(isOwner || isAdmin) ? `
           <div class="admin-form" style="margin-top: 24px;">
             <h2>KKlub access</h2>
             <form data-kklub-form>
@@ -1078,6 +1213,8 @@ function assignRoleForEmail(email, roleName) {
     return;
   }
 
+  const previousRole = getUserRoleByEmail(normalizedEmail);
+
   const config = getRoleConfig();
   const normalizedRole = String(roleName || 'user');
 
@@ -1092,6 +1229,11 @@ function assignRoleForEmail(email, roleName) {
   persistRoleConfig(config);
   state.kklubEmails = [...new Set([...state.kklubEmails.filter((item) => item !== normalizedEmail), ...(normalizedRole === ACCOUNT_ROLES.KKLUB ? [normalizedEmail] : [])])].sort();
   persistStorage('kkooks-kklub-emails', state.kklubEmails);
+
+  if (previousRole !== normalizedRole) {
+    sendRoleChangeEmail(normalizedEmail, previousRole, normalizedRole);
+  }
+
   showNotice(`Role updated to ${normalizedRole}.`);
   renderApp();
 }
@@ -1181,8 +1323,9 @@ function bindEvents() {
   document.querySelector('[data-kklub-form]')?.addEventListener('submit', (event) => {
     event.preventDefault();
 
-    if (!isOwnerUser(getCurrentUser())) {
-      showNotice('Only owners can manage KKlub invites.');
+    const currentUser = getCurrentUser();
+    if (!canManageKklubRequests(currentUser)) {
+      showNotice('Only owners and admins can manage KKlub access.');
       return;
     }
 
@@ -1199,9 +1342,42 @@ function bindEvents() {
       return;
     }
 
+    if (!isOwnerUser(currentUser)) {
+      requestKklubApproval(email, currentUser ? currentUser.email : 'admin');
+      return;
+    }
+
     persistKklubEmails([...getKklubEmails(), email]);
     showNotice('KKlub invite added.');
     renderApp();
+  });
+
+  document.querySelectorAll('[data-approve-kklub-request]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(getCurrentUser())) {
+        showNotice('Only owners can approve KKlub requests.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.approveKklubRequest);
+      if (!email) return;
+
+      approveKklubRequest(email);
+    });
+  });
+
+  document.querySelectorAll('[data-reject-kklub-request]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(getCurrentUser())) {
+        showNotice('Only owners can reject KKlub requests.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.rejectKklubRequest);
+      if (!email) return;
+
+      rejectKklubRequest(email);
+    });
   });
 
   document.querySelectorAll('[data-remove-kklub]').forEach((button) => {
