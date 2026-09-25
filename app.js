@@ -13,10 +13,10 @@ const DEFAULT_ROLE_CONFIG = {
 };
 
 const ACCOUNT_ROLES = {
-  USER: 'user',
-  KKLUB: 'kklub',
-  ADMIN: 'admin',
-  OWNER: 'owner',
+  USER: 'User',
+  KKLUB: 'KKlub',
+  ADMIN: 'Admin',
+  OWNER: 'Owner',
   CEO: 'CEO'
 };
 
