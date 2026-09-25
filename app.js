@@ -169,6 +169,14 @@ function showNotice(message) {
   }, 2400);
 }
 
+function showInlineAuthError(message) {
+  const errorNode = document.querySelector('[data-auth-error]');
+  if (!errorNode) return;
+
+  errorNode.textContent = message || '';
+  errorNode.hidden = !message;
+}
+
 function isFirebaseAvailable() {
   return Boolean(db && auth && navigator && navigator.onLine !== false);
 }
@@ -853,12 +861,14 @@ async function signInWithGoogle() {
     const result = await auth.signInWithPopup(provider);
     state.currentUser = result ? result.user || auth.currentUser : null;
     ensureCurrentUserRole(state.currentUser);
+    showInlineAuthError('');
     showNotice('Signed in with Google.');
     state.page = 'account';
     renderApp();
     navigate('account');
   } catch (error) {
     console.error('Google sign-in failed:', error);
+    showInlineAuthError(error.message || 'Google sign-in failed.');
     showNotice(error.message || 'Google sign-in failed.');
   }
 }
@@ -945,6 +955,7 @@ function renderAuthenticationPage() {
               Email
               <input name="email" type="email" required />
             </label>
+            <div data-auth-error hidden></div>
             <button type="submit" class="primary-button">${config.buttonLabel}</button>
           </form>
         ` : `
@@ -959,6 +970,7 @@ function renderAuthenticationPage() {
               <input name="password" type="password" minlength="6" required />
             </label>
 
+            <div data-auth-error hidden style="min-height: 20px; margin: 6px 0 12px; color: #ff9d9d; font-size: 0.92rem; font-weight: 600;"></div>
             <button type="submit" class="primary-button">${config.buttonLabel}</button>
           </form>
         `}
@@ -1269,6 +1281,8 @@ function bindEvents() {
 
     try {
       let signedInUser = null;
+      showInlineAuthError('');
+
       if (state.authMode === 'signup') {
         signedInUser = await auth.createUserWithEmailAndPassword(email, password);
         showNotice('Account created.');
@@ -1277,7 +1291,6 @@ function bindEvents() {
         showNotice('Signed in successfully.');
       }
 
-      state.currentUser = signedInUser ? signedInUser.user || signedInUser : getCurrentUser();
       state.currentUser = signedInUser ? signedInUser.user || signedInUser : null;
       ensureCurrentUserRole(state.currentUser);
       const destination = state.page === 'authentication' ? 'account' : 'home';
@@ -1286,6 +1299,7 @@ function bindEvents() {
       renderApp();
       navigate(destination);
     } catch (error) {
+      showInlineAuthError(error.message || 'Authentication failed.');
       showNotice(error.message || 'Authentication failed.');
     }
   });
@@ -1307,11 +1321,13 @@ function bindEvents() {
     }
 
     try {
+      showInlineAuthError('');
       await auth.sendPasswordResetEmail(email);
       showNotice('Password reset email sent.');
       state.authMode = 'login';
       renderApp();
     } catch (error) {
+      showInlineAuthError(error.message || 'Unable to send reset email.');
       showNotice(error.message || 'Unable to send reset email.');
     }
   });
