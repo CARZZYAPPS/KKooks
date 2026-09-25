@@ -1,4 +1,4 @@
-﻿const STORAGE_KEYS = {
+const STORAGE_KEYS = {
   recipes: 'kkooks-created-recipes',
   favorites: 'kkooks-favorites',
   menus: 'kkooks-menus',
@@ -6,7 +6,7 @@
 };
 
 const OWNER_EMAILS = ['carzzyapps@gmail.com'];
-const ADMIN_EMAILS = ['carzzyapps@gmail.com'];
+const ADMIN_EMAILS = ['avishayowitz@gmail.com, daniel.kamienny@gmail.com'];
 
 const ACCOUNT_ROLES = {
   USER: 'user',
@@ -113,18 +113,35 @@ function showNotice(message) {
   }, 2400);
 }
 
+function isFirebaseAvailable() {
+  return Boolean(db && navigator && navigator.onLine !== false);
+}
+
+async function withFirebaseTimeout(task, timeoutMs = 1500) {
+  if (!isFirebaseAvailable()) {
+    throw new Error('Firebase unavailable');
+  }
+
+  return Promise.race([
+    task(),
+    new Promise((_, reject) => {
+      window.setTimeout(() => reject(new Error('Firebase request timed out')), timeoutMs);
+    })
+  ]);
+}
+
 async function loadFirebaseData() {
-  if (!db) return;
+  if (!isFirebaseAvailable()) return;
 
   try {
-    const recipesSnapshot = await db.collection('recipes').where('status', '==', 'published').get();
+    const recipesSnapshot = await withFirebaseTimeout(() => db.collection('recipes').where('status', '==', 'published').get());
     const recipes = recipesSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     if (recipes.length) {
       state.recipes = recipes;
       persistStorage(STORAGE_KEYS.recipes, recipes);
     }
 
-    const contentSnapshot = await db.collection('siteContent').doc('main').get();
+    const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
     if (contentSnapshot.exists) {
       const firebaseContent = contentSnapshot.data();
       state.content = { ...state.content, ...firebaseContent };
@@ -134,32 +151,32 @@ async function loadFirebaseData() {
       persistStorage(STORAGE_KEYS.content, state.content);
     }
   } catch (error) {
-    console.error('Unable to load Firebase data:', error);
+    console.warn('Firebase sync skipped because the client is offline or slow.', error);
   }
 }
 
 async function saveRecipeToFirebase(recipe) {
-  if (!db || !auth || !auth.currentUser) return recipe;
+  if (!db || !auth || !auth.currentUser || !navigator.onLine) return recipe;
 
-  const docRef = await db.collection('recipes').add({
+  const docRef = await withFirebaseTimeout(() => db.collection('recipes').add({
     ...recipe,
     status: recipe.status || 'published',
     ownerId: auth.currentUser.uid,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
-  });
+  }));
 
   return { ...recipe, id: docRef.id };
 }
 
 async function saveSiteContentToFirebase() {
-  if (!db) return;
+  if (!db || !navigator.onLine) return;
 
-  await db.collection('siteContent').doc('main').set({
+  await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
     ...state.content,
     kklubEmails: state.kklubEmails,
     updatedAt: serverTimestamp()
-  }, { merge: true });
+  }, { merge: true }));
 }
 
 function isOwnerUser(user = null) {
@@ -218,7 +235,14 @@ function getFilteredRecipes() {
   });
 }
 
+function getAccountDestination() {
+  return auth && auth.currentUser ? 'account' : 'authentication';
+}
+
 function buildHeader() {
+  const accountDestination = getAccountDestination();
+  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+
   return `
     <header class="site-header">
       <div class="header-main">
@@ -235,8 +259,8 @@ function buildHeader() {
           <button type="button" title="Favorites" aria-label="Favorites" data-go="recipes">
             ♡<b>${state.favorites.length || ''}</b>
           </button>
-          <button type="button" title="Account" aria-label="Account" data-go="account">
-            <span class="action-label">♙ Account</span>
+          <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
+            <span class="action-label">♙ ${escapeHtml(accountLabel)}</span>
           </button>
         </div>
       </div>
@@ -244,13 +268,16 @@ function buildHeader() {
       <nav>
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
-        <button type="button" data-go="account">Account</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
       </nav>
     </header>
   `;
 }
 
 function buildFooter() {
+  const accountDestination = getAccountDestination();
+  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+
   return `
     <footer>
       <div class="footer-brand">
@@ -276,12 +303,12 @@ function buildFooter() {
         <h4>Explore</h4>
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
-        <button type="button" data-go="account">Account</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
       </div>
 
       <div>
         <h4>Account</h4>
-        <button type="button" data-go="account">Log in</button>
+        <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
       </div>
 
@@ -402,7 +429,7 @@ function renderRecipesPage() {
         <form class="recipe-creator" data-create-form>
           <label>
             Recipe name
-            <input name="title" required placeholder="Sunday roast" />
+            <input name="title" required placeholder="Shabbos roast" />
           </label>
           <label>
             By
@@ -752,6 +779,11 @@ function renderAccountPageOld() {
 }
 
 function renderApp() {
+  if (state.page === 'account' && (!auth || !auth.currentUser)) {
+    state.page = 'authentication';
+    state.authMode = 'login';
+  }
+
   const pageMarkup = {
     home: renderHomePage,
     recipes: renderRecipesPage,
@@ -1025,16 +1057,15 @@ function bindEvents() {
 
 if (auth) {
   auth.onAuthStateChanged((user) => {
-    if (!user) return;
-    if (db) {
-      db.collection('users').doc(user.uid).set({
-        email: user.email,
-        uid: user.uid,
-        role: getUserRoleByEmail(user.email),
-        updatedAt: serverTimestamp()
-      }, { merge: true }).catch((error) => console.error('Unable to save user profile:', error));
-    }
+    if (!user || !navigator.onLine || !db) return;
+    withFirebaseTimeout(() => db.collection('users').doc(user.uid).set({
+      email: user.email,
+      uid: user.uid,
+      role: getUserRoleByEmail(user.email),
+      updatedAt: serverTimestamp()
+    }, { merge: true })).catch((error) => console.warn('Skipped user profile sync while Firebase is unavailable.', error));
   });
 }
 
-loadFirebaseData().finally(() => renderApp());
+renderApp();
+loadFirebaseData().catch((error) => console.warn('Firebase sync skipped.', error));
