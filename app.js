@@ -89,6 +89,14 @@ const state = {
 let firebaseSyncInFlight = false;
 let authStateReady = false;
 let loadingTimer = null;
+let resolveAuthStateReady;
+const authStateReadyPromise = new Promise((resolve) => {
+  resolveAuthStateReady = resolve;
+});
+
+if (!auth) {
+  resolveAuthStateReady();
+}
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -121,7 +129,7 @@ function persistRoleConfig(nextConfig = state.roleConfig) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save role config:', error);
-      showNotice(`Role was not saved online: ${error.message || 'Firebase write failed.'}`);
+      showNotice(`Role was not saved online: ${getFirebaseErrorMessage(error)}`);
     });
   }
 }
@@ -193,6 +201,11 @@ function showNotice(message) {
   }, 2400);
 }
 
+function getFirebaseErrorMessage(error, fallback = 'Firebase write failed.') {
+  const code = error && error.code ? ` (${error.code})` : '';
+  return `${error && error.message ? error.message : fallback}${code}`;
+}
+
 function setLoading(isLoading) {
   state.loading = Boolean(isLoading);
   window.clearInterval(loadingTimer);
@@ -241,6 +254,10 @@ async function withFirebaseTimeout(task, timeoutMs = 30000) {
 }
 
 async function loadFirebaseData() {
+  if (auth && !authStateReady) {
+    await authStateReadyPromise;
+  }
+
   if (!isFirebaseAvailable() || firebaseSyncInFlight) return;
 
   firebaseSyncInFlight = true;
@@ -276,6 +293,9 @@ async function loadFirebaseData() {
     }
   } catch (error) {
     console.warn('Firebase sync skipped because the client is offline or slow.', error);
+    if (error && error.code) {
+      showNotice(`Firebase sync failed: ${getFirebaseErrorMessage(error, 'Unable to load shared data.')}`);
+    }
   } finally {
     firebaseSyncInFlight = false;
   }
@@ -296,8 +316,8 @@ async function saveRecipeToFirebase(recipe) {
 }
 
 async function saveSiteContentToFirebase() {
-  if (!db || !navigator.onLine) {
-    throw new Error('Firebase is unavailable or the device is offline.');
+  if (!db || !auth || !auth.currentUser || !navigator.onLine) {
+    throw new Error('You must be signed in and online to save shared Firebase data.');
   }
 
   await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
@@ -347,7 +367,7 @@ function persistKklubRequests(list) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save KKlub requests:', error);
-      showNotice(`KKlub request was not saved online: ${error.message || 'Firebase write failed.'}`);
+      showNotice(`KKlub request was not saved online: ${getFirebaseErrorMessage(error)}`);
     });
   }
 }
@@ -486,7 +506,7 @@ function persistKklubEmails(list) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save KKlub emails:', error);
-      showNotice(`KKlub access was not saved online: ${error.message || 'Firebase write failed.'}`);
+      showNotice(`KKlub access was not saved online: ${getFirebaseErrorMessage(error)}`);
     });
   }
 }
@@ -1669,7 +1689,7 @@ function bindEvents() {
       await saveSiteContentToFirebase();
     } catch (error) {
       console.error('Unable to save content to Firebase:', error);
-      showNotice(`Homepage was not saved online: ${error.message || 'Firebase write failed.'}`);
+      showNotice(`Homepage was not saved online: ${getFirebaseErrorMessage(error)}`);
       return;
     } finally {
       setLoading(false);
@@ -1684,6 +1704,7 @@ if (auth) {
   auth.onAuthStateChanged((user) => {
     state.currentUser = user || null;
     syncPageForAuthState(user);
+    resolveAuthStateReady();
 
     if (user) {
       ensureCurrentUserRole(user);
