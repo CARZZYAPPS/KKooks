@@ -248,6 +248,7 @@ function getAccountDestination() {
 function buildHeader() {
   const accountDestination = getAccountDestination();
   const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(auth && auth.currentUser && canAccessAdminDashboard(auth.currentUser));
 
   return `
     <header class="site-header">
@@ -275,6 +276,7 @@ function buildHeader() {
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
+        ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </nav>
     </header>
   `;
@@ -283,6 +285,7 @@ function buildHeader() {
 function buildFooter() {
   const accountDestination = getAccountDestination();
   const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(auth && auth.currentUser && canAccessAdminDashboard(auth.currentUser));
 
   return `
     <footer>
@@ -316,6 +319,7 @@ function buildFooter() {
         <h4>Account</h4>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
+        ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </div>
 
       <small class="copyright">© 2025 KKooks. Cook something good.</small>
@@ -561,6 +565,27 @@ function renderShopPage() {
 }
 
 function renderAdminPage() {
+  const currentUser = auth ? auth.currentUser : null;
+  const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
+  const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
+
+  if (!canAdmin) {
+    return `
+      <main class="account-page">
+        <button class="logo" type="button" data-go="home">
+          <span>♨</span>KKooks
+        </button>
+
+        <section class="account-card locked-card">
+          <span class="eyebrow">Restricted</span>
+          <h1>Admin access required.</h1>
+          <p>This dashboard is only available to KKooks admins and owners.</p>
+          <button type="button" class="primary-button" data-go="account">Back to account</button>
+        </section>
+      </main>
+    `;
+  }
+
   return `
     <main class="admin-page">
       <header class="admin-bar">
@@ -594,6 +619,28 @@ function renderAdminPage() {
           </label>
           <button class="primary-button" type="button" data-save-content>Save homepage</button>
         </div>
+
+        ${isOwner ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>KKlub access</h2>
+            <form data-kklub-form>
+              <label>
+                Add member email
+                <input name="email" type="email" placeholder="member@email.com" required />
+              </label>
+              <button class="primary-button" type="submit">Add KKlub member</button>
+            </form>
+
+            <div class="mini-grid" style="margin-top: 16px;">
+              ${getKklubEmails().length ? getKklubEmails().map((email) => `
+                <div class="mini-item">
+                  <strong>${escapeHtml(email)}</strong>
+                  <button type="button" class="secondary-button" data-remove-kklub="${escapeHtml(email)}">Remove</button>
+                </div>
+              `).join('') : '<p>No KKlub members added yet.</p>'}
+            </div>
+          </div>
+        ` : ''}
       </section>
     </main>
   `;
@@ -603,6 +650,7 @@ function renderAccountPage() {
   const currentUser = auth ? auth.currentUser : null;
   const role = currentUser && currentUser.email ? getUserRoleByEmail(currentUser.email) : 'guest';
   const kklubUnlocked = isKklubMember(currentUser);
+  const canAccessDashboard = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <main class="account-dashboard-page">
@@ -618,6 +666,7 @@ function renderAccountPage() {
             <button type="button" class="${state.accountTab === 'overview' ? 'active' : ''}" data-account-tab="overview">Overview</button>
             <button type="button" class="${state.accountTab === 'favorites' ? 'active' : ''}" data-account-tab="favorites">Favorites</button>
             <button type="button" class="${state.accountTab === 'kklub' ? 'active' : ''}" data-account-tab="kklub">KKlub</button>
+            ${canAccessDashboard ? '<button type="button" data-go="admin">Admin dashboard</button>' : ''}
             ${currentUser ? '<button type="button" data-go="authentication">Sign out / switch</button>' : '<button type="button" data-go="authentication">Sign in</button>'}
           </nav>
         </aside>
@@ -836,6 +885,10 @@ function renderApp() {
   if (state.page === 'account' && (!auth || !auth.currentUser)) {
     state.page = 'authentication';
     state.authMode = 'login';
+  }
+
+  if (state.page === 'admin' && (!auth || !auth.currentUser || !canAccessAdminDashboard(auth.currentUser))) {
+    state.page = 'account';
   }
 
   const pageMarkup = {
