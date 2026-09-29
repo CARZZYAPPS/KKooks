@@ -142,15 +142,15 @@ function hasAnyRoleConfig() {
 function ensureCurrentUserRole(user = getCurrentUser()) {
   if (!user || !user.email) return;
 
-  const config = getRoleConfig();
   const normalizedEmail = normalizeEmail(user.email);
-  if (hasAnyRoleConfig()) return;
+  if (hasAnyRoleConfig() || normalizedEmail !== PROTECTED_CEO_EMAIL) return;
 
-  persistRoleConfig({
+  state.roleConfig = {
     ownerEmails: [normalizedEmail],
     adminEmails: [],
     kklubEmails: []
-  });
+  };
+  persistStorage('kkooks-role-config', state.roleConfig);
 }
 
 function getUserRoleByEmail(email) {
@@ -158,7 +158,7 @@ function getUserRoleByEmail(email) {
   const config = getRoleConfig();
 
   if (normalizedEmail === PROTECTED_CEO_EMAIL) return ACCOUNT_ROLES.CEO;
-  if (!hasAnyRoleConfig()) return ACCOUNT_ROLES.OWNER;
+  if (!hasAnyRoleConfig()) return ACCOUNT_ROLES.USER;
   if (config.ownerEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
   if (config.adminEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
   if (config.kklubEmails.includes(normalizedEmail) || getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
@@ -283,7 +283,8 @@ async function loadFirebaseData() {
         persistStorage('kkooks-role-config', state.roleConfig);
       }
       if (Array.isArray(firebaseContent.kklubEmails)) {
-        persistKklubEmails(firebaseContent.kklubEmails);
+        state.kklubEmails = [...new Set(firebaseContent.kklubEmails.map(normalizeEmail).filter(Boolean))].sort();
+        persistStorage('kkooks-kklub-emails', state.kklubEmails);
       }
       if (Array.isArray(firebaseContent.kklubRequests)) {
         state.kklubRequests = firebaseContent.kklubRequests;
@@ -339,7 +340,7 @@ function isAdminUser(user = null) {
 
 function canAccessAdminDashboard(user = null) {
   if (!user || !user.email) return false;
-  if (!hasAnyRoleConfig()) return true;
+  if (!hasAnyRoleConfig()) return isOwnerUser(user);
   const role = getUserRoleByEmail(user.email);
   return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
