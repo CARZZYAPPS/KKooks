@@ -59,10 +59,10 @@ const DEFAULT_CONTENT = {
 
 function getPublicSiteContent(content = state.content) {
   return {
-    brand: content.brand,
-    heroLead: content.heroLead,
-    heroAccent: content.heroAccent,
-    heroDescription: content.heroDescription
+    brand: content.brand ?? DEFAULT_CONTENT.brand,
+    heroLead: content.heroLead ?? DEFAULT_CONTENT.heroLead,
+    heroAccent: content.heroAccent ?? DEFAULT_CONTENT.heroAccent,
+    heroDescription: content.heroDescription ?? DEFAULT_CONTENT.heroDescription
   };
 }
 
@@ -272,17 +272,18 @@ async function loadFirebaseData() {
   firebaseSyncInFlight = true;
 
   try {
+    const publicContentRef = db.collection('siteContent').doc('public');
+    const publicContentSnapshot = await withFirebaseTimeout(() => publicContentRef.get());
+    if (publicContentSnapshot.exists) {
+      state.content = { ...state.content, ...publicContentSnapshot.data() };
+      persistStorage(STORAGE_KEYS.content, state.content);
+    }
+
     const recipesSnapshot = await withFirebaseTimeout(() => db.collection('recipes').where('status', '==', 'published').get());
     const recipes = recipesSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     if (recipes.length) {
       state.recipes = recipes;
       persistStorage(STORAGE_KEYS.recipes, recipes);
-    }
-
-    const publicContentRef = db.collection('siteContent').doc('public');
-    const publicContentSnapshot = await withFirebaseTimeout(() => publicContentRef.get());
-    if (publicContentSnapshot.exists) {
-      state.content = { ...state.content, ...publicContentSnapshot.data() };
     }
 
     if (auth && auth.currentUser) {
@@ -324,6 +325,7 @@ async function loadFirebaseData() {
     }
   } finally {
     firebaseSyncInFlight = false;
+    renderApp();
   }
 }
 
