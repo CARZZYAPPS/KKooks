@@ -57,6 +57,15 @@ const DEFAULT_CONTENT = {
   heroDescription: 'Fresh recipes, smart menus, and a community of home chefs - all in one dark, delicious place.'
 };
 
+function getPublicSiteContent(content = state.content) {
+  return {
+    brand: content.brand,
+    heroLead: content.heroLead,
+    heroAccent: content.heroAccent,
+    heroDescription: content.heroDescription
+  };
+}
+
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=900&q=85';
 const PAGE_MAP = {
   home: 'index.html',
@@ -270,27 +279,43 @@ async function loadFirebaseData() {
       persistStorage(STORAGE_KEYS.recipes, recipes);
     }
 
-    const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
-    if (contentSnapshot.exists) {
-      const firebaseContent = contentSnapshot.data();
-      state.content = { ...state.content, ...firebaseContent };
-      if (firebaseContent.roleConfig) {
-        state.roleConfig = {
-          ownerEmails: Array.isArray(firebaseContent.roleConfig.ownerEmails) ? firebaseContent.roleConfig.ownerEmails : [],
-          adminEmails: Array.isArray(firebaseContent.roleConfig.adminEmails) ? firebaseContent.roleConfig.adminEmails : [],
-          kklubEmails: Array.isArray(firebaseContent.roleConfig.kklubEmails) ? firebaseContent.roleConfig.kklubEmails : []
-        };
-        persistStorage('kkooks-role-config', state.roleConfig);
+    const publicContentRef = db.collection('siteContent').doc('public');
+    const publicContentSnapshot = await withFirebaseTimeout(() => publicContentRef.get());
+    if (publicContentSnapshot.exists) {
+      state.content = { ...state.content, ...publicContentSnapshot.data() };
+    }
+
+    if (auth && auth.currentUser) {
+      const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
+      if (contentSnapshot.exists) {
+        const firebaseContent = contentSnapshot.data();
+        state.content = { ...state.content, ...firebaseContent };
+        if (firebaseContent.roleConfig) {
+          state.roleConfig = {
+            ownerEmails: Array.isArray(firebaseContent.roleConfig.ownerEmails) ? firebaseContent.roleConfig.ownerEmails : [],
+            adminEmails: Array.isArray(firebaseContent.roleConfig.adminEmails) ? firebaseContent.roleConfig.adminEmails : [],
+            kklubEmails: Array.isArray(firebaseContent.roleConfig.kklubEmails) ? firebaseContent.roleConfig.kklubEmails : []
+          };
+          persistStorage('kkooks-role-config', state.roleConfig);
+        }
+        if (Array.isArray(firebaseContent.kklubEmails)) {
+          state.kklubEmails = [...new Set(firebaseContent.kklubEmails.map(normalizeEmail).filter(Boolean))].sort();
+          persistStorage('kkooks-kklub-emails', state.kklubEmails);
+        }
+        if (Array.isArray(firebaseContent.kklubRequests)) {
+          state.kklubRequests = firebaseContent.kklubRequests;
+          persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+        }
+        persistStorage(STORAGE_KEYS.content, state.content);
+
+        if (!publicContentSnapshot.exists && canAccessAdminDashboard(auth.currentUser)) {
+          try {
+            await withFirebaseTimeout(() => publicContentRef.set(getPublicSiteContent(firebaseContent)));
+          } catch (error) {
+            console.warn('Public homepage content could not be initialized.', error);
+          }
+        }
       }
-      if (Array.isArray(firebaseContent.kklubEmails)) {
-        state.kklubEmails = [...new Set(firebaseContent.kklubEmails.map(normalizeEmail).filter(Boolean))].sort();
-        persistStorage('kkooks-kklub-emails', state.kklubEmails);
-      }
-      if (Array.isArray(firebaseContent.kklubRequests)) {
-        state.kklubRequests = firebaseContent.kklubRequests;
-        persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
-      }
-      persistStorage(STORAGE_KEYS.content, state.content);
     }
   } catch (error) {
     console.warn('Firebase sync skipped because the client is offline or slow.', error);
@@ -321,13 +346,19 @@ async function saveSiteContentToFirebase() {
     throw new Error('You must be signed in and online to save shared Firebase data.');
   }
 
-  await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
-    ...state.content,
-    roleConfig: getRoleConfig(),
-    kklubEmails: state.kklubEmails,
-    kklubRequests: state.kklubRequests,
-    updatedAt: serverTimestamp()
-  }, { merge: true }));
+  await withFirebaseTimeout(() => Promise.all([
+    db.collection('siteContent').doc('main').set({
+      ...state.content,
+      roleConfig: getRoleConfig(),
+      kklubEmails: state.kklubEmails,
+      kklubRequests: state.kklubRequests,
+      updatedAt: serverTimestamp()
+    }, { merge: true }),
+    db.collection('siteContent').doc('public').set({
+      ...getPublicSiteContent(),
+      updatedAt: serverTimestamp()
+    }, { merge: true })
+  ]));
 }
 
 function isOwnerUser(user = null) {
