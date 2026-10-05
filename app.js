@@ -599,7 +599,7 @@ function buildHeader() {
         </form>
 
         <div class="header-actions">
-          <button type="button" title="Favorites" aria-label="Favorites" data-go="favorites">
+          <button type="button" title="Favorites" aria-label="Favorites" data-go="">
             ♡<b>${state.favorites.length || ''}</b>
           </button>
           <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
