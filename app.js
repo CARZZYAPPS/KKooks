@@ -599,7 +599,7 @@ function buildHeader() {
         </form>
 
         <div class="header-actions">
-          <button type="button" title="Favorites" aria-label="Favorites" data-go="">
+          <button type="button" title="Favorites" aria-label="Favorites" data-go="favorites">
             ♡<b>${state.favorites.length || ''}</b>
           </button>
           <button type="button" title="Account" aria-label="Account" data-go="${accountDestination}">
@@ -610,7 +610,7 @@ function buildHeader() {
 
       <nav>
         <button type="button" data-go="home">Home</button>
-        <button type="button" data-go=""></button>
+        <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </nav>
