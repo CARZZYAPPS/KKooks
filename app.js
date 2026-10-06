@@ -72,7 +72,7 @@ const PAGE_MAP = {
   recipes: 'recipes.html',
   shop: 'shop.html',
   account: 'account.html',
-  authentication: 'authentication.html',
+  authentication: 'auth.html',
   create: 'create.html',
   favorites: 'favorites.html',
   menus: 'menus.html',
@@ -138,14 +138,14 @@ function persistRoleConfig(nextConfig = state.roleConfig) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save role config:', error);
-      showNotice(`Role was not saved online: ${getFirebaseErrorMessage(error)}`);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't save the role change. Please try again."));
     });
   }
 }
 
 function hasAnyRoleConfig() {
   const config = getRoleConfig();
-  return Boolean(config.ownerEmails.length || config.adminEmails.length || config.kklubEmails.length);
+  return Boolean(config.ownerEmails.length || config.adminEmails.length || config.kklubEmails.length || getKklubEmails().length);
 }
 
 function ensureCurrentUserRole(user = getCurrentUser()) {
@@ -199,7 +199,10 @@ function escapeHtml(value = '') {
 
 function showNotice(message) {
   const notice = document.querySelector('#notice');
-  if (!notice) return;
+  if (!notice) {
+    window.alert(message);
+    return;
+  }
 
   notice.textContent = message;
   notice.hidden = false;
@@ -207,12 +210,54 @@ function showNotice(message) {
   window.clearTimeout(showNotice.timer);
   showNotice.timer = window.setTimeout(() => {
     notice.hidden = true;
+    try {
+      if (sessionStorage.getItem('kkooks-pending-notice') === message) {
+        sessionStorage.removeItem('kkooks-pending-notice');
+      }
+    } catch (error) {
+      console.warn('A notification could not be cleared from this browser session.', error);
+    }
   }, 2400);
+
+  try {
+    sessionStorage.setItem('kkooks-pending-notice', message);
+  } catch (error) {
+    console.warn('A notification could not be saved for the next page.', error);
+  }
 }
 
-function getFirebaseErrorMessage(error, fallback = 'Firebase write failed.') {
-  const code = error && error.code ? ` (${error.code})` : '';
-  return `${error && error.message ? error.message : fallback}${code}`;
+function getFirebaseErrorMessage(error, fallback = 'Something went wrong. Please try again.') {
+  const code = String(error && error.code || '').replace(/^auth\//, '');
+  const messages = {
+    'permission-denied': "You don't have permission to make this change.",
+    unauthenticated: 'Please sign in and try again.',
+    unavailable: "We couldn't connect. Check your internet connection and try again.",
+    'deadline-exceeded': "We couldn't connect. Check your internet connection and try again.",
+    'network-request-failed': "We couldn't connect. Check your internet connection and try again.",
+    'already-exists': 'This already exists.',
+    'not-found': "We couldn't find what you were looking for."
+  };
+
+  return messages[code] || fallback;
+}
+
+function getFriendlyAuthError(error, fallback = 'Something went wrong. Please try again.') {
+  const code = String(error && error.code || '').replace(/^auth\//, '');
+  const messages = {
+    'invalid-email': 'Enter a valid email address.',
+    'email-already-in-use': 'An account already exists for this email.',
+    'user-not-found': "That email and password don't match.",
+    'wrong-password': "That email and password don't match.",
+    'invalid-credential': "That email and password don't match.",
+    'weak-password': 'Choose a stronger password.',
+    'too-many-requests': 'Too many attempts. Wait a moment and try again.',
+    'network-request-failed': "We couldn't connect. Check your internet connection and try again.",
+    'popup-closed-by-user': 'Sign-in was cancelled.',
+    'operation-not-allowed': 'This sign-in option is unavailable right now.',
+    'unauthorized-domain': "Sign-in isn't available from this page."
+  };
+
+  return messages[code] || fallback;
 }
 
 function setLoading(isLoading) {
@@ -321,7 +366,7 @@ async function loadFirebaseData() {
   } catch (error) {
     console.warn('Firebase sync skipped because the client is offline or slow.', error);
     if (error && error.code) {
-      showNotice(`Firebase sync failed: ${getFirebaseErrorMessage(error, 'Unable to load shared data.')}`);
+      showNotice(getFirebaseErrorMessage(error, "Some shared information couldn't be loaded. Please refresh and try again."));
     }
   } finally {
     firebaseSyncInFlight = false;
@@ -401,7 +446,7 @@ function persistKklubRequests(list) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save KKlub requests:', error);
-      showNotice(`KKlub request was not saved online: ${getFirebaseErrorMessage(error)}`);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't save your KKlub request. Please try again."));
     });
   }
 }
@@ -540,7 +585,7 @@ function persistKklubEmails(list) {
       updatedAt: serverTimestamp()
     }, { merge: true }).catch((error) => {
       console.error('Unable to save KKlub emails:', error);
-      showNotice(`KKlub access was not saved online: ${getFirebaseErrorMessage(error)}`);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't update KKlub access. Please try again."));
     });
   }
 }
@@ -760,6 +805,7 @@ function renderHomePage() {
 
 function renderRecipesPage() {
   const recipes = getFilteredRecipes();
+  const canAddRecipe = authStateReady && canContributeRecipes(getCurrentUser());
 
   return `
     <main class="recipes-page">
@@ -773,7 +819,7 @@ function renderRecipesPage() {
           <input aria-label="Search recipes" placeholder="Search recipes" value="${escapeHtml(state.query)}" />
         </form>
 
-        <form class="recipe-creator" data-create-form>
+        ${canAddRecipe ? `<form class="recipe-creator" data-create-form>
           <label>
             Recipe name
             <input name="title" required placeholder="Sunday roast" />
@@ -802,15 +848,19 @@ function renderRecipesPage() {
             <textarea name="description" rows="3" placeholder="Short introduction"></textarea>
           </label>
           <button type="submit" class="primary-button">Add recipe</button>
-        </form>
+        </form>` : ''}
       </div>
 
-      ${recipes.length ? `<div class="recipe-grid">${recipes.map(buildRecipeCard).join('')}</div>` : '<p class="empty-state">No recipes published yet. Create your first recipe to start your collection.</p>'}
+      ${recipes.length ? `<div class="recipe-grid">${recipes.map(buildRecipeCard).join('')}</div>` : '<p class="empty-state">No recipes have been published yet.</p>'}
     </main>
   `;
 }
 
 function renderCreatePage() {
+  if (!authStateReady || !canContributeRecipes(getCurrentUser())) {
+    return renderRecipesPage();
+  }
+
   return `
     <main class="create-page">
       <button class="logo" type="button" data-go="home">
@@ -1119,7 +1169,7 @@ function renderAccountPage() {
 
 async function signInWithGoogle() {
   if (!auth || !window.firebase || !window.firebase.auth) {
-    showNotice('Firebase Auth is not configured.');
+    showNotice('Sign-in is unavailable right now. Please try again later.');
     return;
   }
 
@@ -1141,14 +1191,15 @@ async function signInWithGoogle() {
     navigate('account');
   } catch (error) {
     console.error('Google sign-in failed:', error);
-    showInlineAuthError(error.message || 'Google sign-in failed.');
-    showNotice(error.message || 'Google sign-in failed.');
+    const message = getFriendlyAuthError(error, "We couldn't sign you in. Please try again.");
+    showInlineAuthError(message);
+    showNotice(message);
   }
 }
 
 async function signOutUser() {
   if (!auth) {
-    showNotice('Firebase Auth is not configured.');
+    showNotice('Sign-in is unavailable right now. Please try again later.');
     return;
   }
 
@@ -1162,7 +1213,7 @@ async function signOutUser() {
     showNotice('Signed out.');
   } catch (error) {
     console.error('Sign out failed:', error);
-    showNotice(error.message || 'Unable to sign out.');
+    showNotice(getFriendlyAuthError(error, "We couldn't sign you out. Please try again."));
   }
 }
 
@@ -1307,6 +1358,8 @@ function syncPageForAuthState(user) {
 
 function renderApp() {
   const currentUser = getCurrentUser();
+  const appRoot = document.querySelector('#app');
+  const notice = document.querySelector('#notice');
 
   if (authStateReady && state.page === 'authentication' && currentUser) {
     state.page = 'account';
@@ -1321,6 +1374,10 @@ function renderApp() {
     state.page = 'account';
   }
 
+  if (authStateReady && state.page === 'create' && !canContributeRecipes(currentUser)) {
+    state.page = 'recipes';
+  }
+
   const pageMarkup = {
     home: renderHomePage,
     recipes: renderRecipesPage,
@@ -1333,7 +1390,11 @@ function renderApp() {
     admin: renderAdminPage
   }[state.page] || renderHomePage;
 
-  document.querySelector('#app').innerHTML = `
+  if (appRoot && notice && appRoot.parentNode === document.body) {
+    document.body.insertBefore(notice, appRoot);
+  }
+
+  appRoot.innerHTML = `
     <div class="site-shell">
       <div class="loading-indicator" data-loading-indicator ${state.loading ? '' : 'hidden'} role="status" aria-live="polite">
         <span class="loading-spinner" aria-hidden="true"></span>
@@ -1426,15 +1487,20 @@ function bindEvents() {
     if (!input || !input.value.trim()) return;
     const email = input.value.trim();
 
-    if (db) {
-      try {
-        await db.collection('newsletterSubscribers').doc(email.toLowerCase()).set({
-          email: email.toLowerCase(),
-          subscribedAt: serverTimestamp()
-        }, { merge: true });
-      } catch (error) {
-        console.error('Unable to save subscriber:', error);
-      }
+    if (!db) {
+      showNotice("We couldn't add you to the list right now. Please try again later.");
+      return;
+    }
+
+    try {
+      await db.collection('newsletterSubscribers').doc(email.toLowerCase()).set({
+        email: email.toLowerCase(),
+        subscribedAt: serverTimestamp()
+      }, { merge: true });
+    } catch (error) {
+      console.error('Unable to save subscriber:', error);
+      showNotice("We couldn't add you to the list. Please try again.");
+      return;
     }
 
     input.value = '';
@@ -1445,7 +1511,7 @@ function bindEvents() {
     event.preventDefault();
 
     if (!isOwnerUser(getCurrentUser())) {
-      showNotice('Only owners can manage roles.');
+      showNotice('Only an owner can change account roles.');
       return;
     }
 
@@ -1458,7 +1524,7 @@ function bindEvents() {
   document.querySelectorAll('[data-remove-role]').forEach((button) => {
     button.addEventListener('click', () => {
       if (!isOwnerUser(getCurrentUser())) {
-        showNotice('Only owners can manage roles.');
+        showNotice('Only an owner can change account roles.');
         return;
       }
 
@@ -1502,7 +1568,7 @@ function bindEvents() {
   document.querySelectorAll('[data-approve-kklub-request]').forEach((button) => {
     button.addEventListener('click', () => {
       if (!isOwnerUser(getCurrentUser())) {
-        showNotice('Only owners can approve KKlub requests.');
+        showNotice('Only an owner can approve KKlub requests.');
         return;
       }
 
@@ -1516,7 +1582,7 @@ function bindEvents() {
   document.querySelectorAll('[data-reject-kklub-request]').forEach((button) => {
     button.addEventListener('click', () => {
       if (!isOwnerUser(getCurrentUser())) {
-        showNotice('Only owners can reject KKlub requests.');
+        showNotice('Only an owner can reject KKlub requests.');
         return;
       }
 
@@ -1530,7 +1596,7 @@ function bindEvents() {
   document.querySelectorAll('[data-remove-kklub]').forEach((button) => {
     button.addEventListener('click', () => {
       if (!isOwnerUser(getCurrentUser())) {
-        showNotice('Only owners can manage KKlub invites.');
+        showNotice('Only an owner can manage KKlub invitations.');
         return;
       }
 
@@ -1548,7 +1614,7 @@ function bindEvents() {
 
     const currentUser = getCurrentUser();
     if (!currentUser || !canContributeRecipes(currentUser)) {
-      showNotice('Invite-only: only admins or KKlub members can contribute recipes.');
+      showNotice('Recipe sharing is available to admins and KKlub members.');
       return;
     }
 
@@ -1585,22 +1651,17 @@ function bindEvents() {
       }
     } catch (error) {
       console.error('Unable to publish recipe to Firebase; saving locally instead:', error);
-      showNotice('Online publishing failed, so the recipe was saved on this device.');
+      showNotice("We couldn't publish your recipe. Please try again when you're connected.");
+      return;
     } finally {
       setLoading(false);
-    }
-
-    if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
-      showNotice('Recipe published.');
-    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
-      showNotice('Recipe saved.');
     }
 
     state.recipes.unshift(savedRecipe);
     persistStorage(STORAGE_KEYS.recipes, state.recipes);
     if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
       showNotice('Recipe published.');
-    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
+    } else {
       showNotice('Recipe saved.');
     }
     navigate('recipes');
@@ -1610,7 +1671,7 @@ function bindEvents() {
     event.preventDefault();
 
     if (!auth) {
-      showNotice('Firebase Auth is not configured.');
+      showNotice('Sign-in is unavailable right now. Please try again later.');
       return;
     }
 
@@ -1643,8 +1704,9 @@ function bindEvents() {
       renderApp();
       navigate(destination);
     } catch (error) {
-      showInlineAuthError(error.message || 'Authentication failed.');
-      showNotice(error.message || 'Authentication failed.');
+      const message = getFriendlyAuthError(error, "We couldn't sign you in. Check your details and try again.");
+      showInlineAuthError(message);
+      showNotice(message);
     }
   });
 
@@ -1652,7 +1714,7 @@ function bindEvents() {
     event.preventDefault();
 
     if (!auth) {
-      showNotice('Firebase Auth is not configured.');
+      showNotice('Password reset is unavailable right now. Please try again later.');
       return;
     }
 
@@ -1671,8 +1733,9 @@ function bindEvents() {
       state.authMode = 'login';
       renderApp();
     } catch (error) {
-      showInlineAuthError(error.message || 'Unable to send reset email.');
-      showNotice(error.message || 'Unable to send reset email.');
+      const message = getFriendlyAuthError(error, "We couldn't send the reset email. Please try again.");
+      showInlineAuthError(message);
+      showNotice(message);
     }
   });
 
@@ -1723,7 +1786,7 @@ function bindEvents() {
       await saveSiteContentToFirebase();
     } catch (error) {
       console.error('Unable to save content to Firebase:', error);
-      showNotice(`Homepage was not saved online: ${getFirebaseErrorMessage(error)}`);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't save the homepage changes. Please try again."));
       return;
     } finally {
       setLoading(false);
@@ -1765,6 +1828,16 @@ window.addEventListener('offline', () => {
 });
 
 renderApp();
+try {
+  const pendingNotice = sessionStorage.getItem('kkooks-pending-notice');
+  if (pendingNotice) {
+    sessionStorage.removeItem('kkooks-pending-notice');
+    showNotice(pendingNotice);
+  }
+} catch (error) {
+  console.warn('A notification could not be restored from the previous page.', error);
+}
+
 if (navigator.onLine) {
   setLoading(true);
   loadFirebaseData()

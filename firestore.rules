@@ -27,6 +27,27 @@ service cloud.firestore {
         && resource.data.roleConfig.adminEmails.hasAny([request.auth.token.email]));
     }
 
+    function canContributeRecipes() {
+      let mainPath = /databases/$(database)/documents/siteContent/main;
+      let mainData = exists(mainPath) ? get(mainPath).data : {};
+      let roleConfig = mainData.get('roleConfig', {});
+      let kklubEmails = mainData.get('kklubEmails', []);
+      return signedIn() && (
+        isProtectedOwner()
+        || (roleConfig is map
+          && roleConfig.ownerEmails is list
+          && roleConfig.ownerEmails.hasAny([request.auth.token.email]))
+        || (roleConfig is map
+          && roleConfig.adminEmails is list
+          && roleConfig.adminEmails.hasAny([request.auth.token.email]))
+        || (roleConfig is map
+          && roleConfig.kklubEmails is list
+          && roleConfig.kklubEmails.hasAny([request.auth.token.email]))
+        || (kklubEmails is list
+          && kklubEmails.hasAny([request.auth.token.email]))
+      );
+    }
+
     function canManageHomepage() {
       let mainPath = /databases/$(database)/documents/siteContent/main;
       let roleConfig = exists(mainPath) ? get(mainPath).data.get('roleConfig', {}) : {};
@@ -71,11 +92,11 @@ service cloud.firestore {
         && (newRequest.get('email', '') == request.auth.token.email || isAdminOrOwner());
     }
 
-    // Published recipes are public. Only signed-in users can create recipes,
-    // and only the original creator can edit or delete one.
+    // Published recipes are public. Only admins and KKlub members can create
+    // recipes, and only the original creator can edit or delete one.
     match /recipes/{recipeId} {
       allow read: if resource.data.status == 'published' || request.auth != null;
-      allow create: if request.auth != null
+      allow create: if canContributeRecipes()
         && request.resource.data.ownerId == request.auth.uid;
       allow update, delete: if request.auth != null
         && resource.data.ownerId == request.auth.uid;
