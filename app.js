@@ -1,19 +1,26 @@
-﻿const STORAGE_KEYS = {
+const STORAGE_KEYS = {
   recipes: 'kkooks-created-recipes',
   favorites: 'kkooks-favorites',
   menus: 'kkooks-menus',
-  content: 'kkooks-site-content'
+  content: 'kkooks-site-content',
+  kklubRequests: 'kkooks-kklub-requests'
 };
 
-const OWNER_EMAILS = ['carzzyapps@gmail.com'];
-const ADMIN_EMAILS = ['carzzyapps@gmail.com'];
+const DEFAULT_ROLE_CONFIG = {
+  ownerEmails: [],
+  adminEmails: [],
+  kklubEmails: []
+};
 
 const ACCOUNT_ROLES = {
   USER: 'user',
   KKLUB: 'kklub',
   ADMIN: 'admin',
-  OWNER: 'owner'
+  OWNER: 'owner',
+  CEO: 'ceo'
 };
+
+const PROTECTED_CEO_EMAIL = 'carzzyapps@gmail.com';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyBJvA5q7ba31qS_ULZLagi8O4bG80vTeRI',
@@ -30,6 +37,17 @@ const firebaseApp = window.firebase && window.firebase.apps && window.firebase.a
 const auth = firebaseApp ? window.firebase.auth() : null;
 const db = firebaseApp ? window.firebase.firestore() : null;
 
+if (db) {
+  try {
+    db.settings({
+      experimentalForceLongPolling: true,
+      useFetchStreams: false
+    });
+  } catch (error) {
+    console.warn('Firestore transport settings could not be applied.', error);
+  }
+}
+
 const serverTimestamp = () => (window.firebase && window.firebase.firestore ? window.firebase.firestore.FieldValue.serverTimestamp() : new Date().toISOString());
 
 const DEFAULT_CONTENT = {
@@ -38,6 +56,15 @@ const DEFAULT_CONTENT = {
   heroAccent: 'Boldly.',
   heroDescription: 'Fresh recipes, smart menus, and a community of home chefs - all in one dark, delicious place.'
 };
+
+function getPublicSiteContent(content = state.content) {
+  return {
+    brand: content.brand ?? DEFAULT_CONTENT.brand,
+    heroLead: content.heroLead ?? DEFAULT_CONTENT.heroLead,
+    heroAccent: content.heroAccent ?? DEFAULT_CONTENT.heroAccent,
+    heroDescription: content.heroDescription ?? DEFAULT_CONTENT.heroDescription
+  };
+}
 
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?auto=format&fit=crop&w=900&q=85';
 const PAGE_MAP = {
@@ -57,25 +84,93 @@ const state = {
   query: '',
   authMode: 'login',
   accountTab: 'overview',
+  currentUser: null,
   recipes: readStorage(STORAGE_KEYS.recipes, []),
   favorites: readStorage(STORAGE_KEYS.favorites, []),
   menus: readStorage(STORAGE_KEYS.menus, []),
   content: readStorage(STORAGE_KEYS.content, DEFAULT_CONTENT),
-  kklubEmails: readStorage('kkooks-kklub-emails', [])
+  kklubEmails: readStorage('kkooks-kklub-emails', []),
+  roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG),
+  kklubRequests: readStorage(STORAGE_KEYS.kklubRequests, []),
+  loading: false
 };
 
 let firebaseSyncInFlight = false;
+let authStateReady = false;
+let loadingTimer = null;
+let resolveAuthStateReady;
+const authStateReadyPromise = new Promise((resolve) => {
+  resolveAuthStateReady = resolve;
+});
+
+if (!auth) {
+  resolveAuthStateReady();
+}
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function getRoleConfig() {
+  const config = state.roleConfig || DEFAULT_ROLE_CONFIG;
+  return {
+    ownerEmails: Array.isArray(config.ownerEmails) ? config.ownerEmails.map(normalizeEmail).filter(Boolean) : [],
+    adminEmails: Array.isArray(config.adminEmails) ? config.adminEmails.map(normalizeEmail).filter(Boolean) : [],
+    kklubEmails: Array.isArray(config.kklubEmails) ? config.kklubEmails.map(normalizeEmail).filter(Boolean) : []
+  };
+}
+
+function persistRoleConfig(nextConfig = state.roleConfig) {
+  const config = {
+    ownerEmails: [...new Set((nextConfig.ownerEmails || []).map(normalizeEmail).filter(Boolean))],
+    adminEmails: [...new Set((nextConfig.adminEmails || []).map(normalizeEmail).filter(Boolean))],
+    kklubEmails: [...new Set((nextConfig.kklubEmails || []).map(normalizeEmail).filter(Boolean))]
+  };
+
+  state.roleConfig = config;
+  persistStorage('kkooks-role-config', config);
+
+  if (db) {
+    db.collection('siteContent').doc('main').set({
+      roleConfig: config,
+      kklubEmails: state.kklubEmails,
+      kklubRequests: state.kklubRequests,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save role config:', error);
+      showNotice(`Role was not saved online: ${getFirebaseErrorMessage(error)}`);
+    });
+  }
+}
+
+function hasAnyRoleConfig() {
+  const config = getRoleConfig();
+  return Boolean(config.ownerEmails.length || config.adminEmails.length || config.kklubEmails.length);
+}
+
+function ensureCurrentUserRole(user = getCurrentUser()) {
+  if (!user || !user.email) return;
+
+  const normalizedEmail = normalizeEmail(user.email);
+  if (hasAnyRoleConfig() || normalizedEmail !== PROTECTED_CEO_EMAIL) return;
+
+  state.roleConfig = {
+    ownerEmails: [normalizedEmail],
+    adminEmails: [],
+    kklubEmails: []
+  };
+  persistStorage('kkooks-role-config', state.roleConfig);
+}
+
 function getUserRoleByEmail(email) {
   const normalizedEmail = normalizeEmail(email);
+  const config = getRoleConfig();
 
-  if (OWNER_EMAILS.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
-  if (ADMIN_EMAILS.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
-  if (getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
+  if (normalizedEmail === PROTECTED_CEO_EMAIL) return ACCOUNT_ROLES.CEO;
+  if (!hasAnyRoleConfig()) return ACCOUNT_ROLES.USER;
+  if (config.ownerEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.OWNER;
+  if (config.adminEmails.includes(normalizedEmail)) return ACCOUNT_ROLES.ADMIN;
+  if (config.kklubEmails.includes(normalizedEmail) || getKklubEmails().includes(normalizedEmail)) return ACCOUNT_ROLES.KKLUB;
   return ACCOUNT_ROLES.USER;
 }
 
@@ -115,11 +210,46 @@ function showNotice(message) {
   }, 2400);
 }
 
+function getFirebaseErrorMessage(error, fallback = 'Firebase write failed.') {
+  const code = error && error.code ? ` (${error.code})` : '';
+  return `${error && error.message ? error.message : fallback}${code}`;
+}
+
+function setLoading(isLoading) {
+  state.loading = Boolean(isLoading);
+  window.clearInterval(loadingTimer);
+  loadingTimer = null;
+
+  const indicator = document.querySelector('[data-loading-indicator]');
+  if (!indicator) return;
+
+  indicator.hidden = !state.loading;
+  if (!state.loading) return;
+
+  let dotCount = 0;
+  const label = indicator.querySelector('[data-loading-label]');
+  const updateLabel = () => {
+    if (label) label.textContent = `Loading${'.'.repeat(dotCount)}`;
+    dotCount = (dotCount + 1) % 4;
+  };
+
+  updateLabel();
+  loadingTimer = window.setInterval(updateLabel, 500);
+}
+
+function showInlineAuthError(message) {
+  const errorNode = document.querySelector('[data-auth-error]');
+  if (!errorNode) return;
+
+  errorNode.textContent = message || '';
+  errorNode.hidden = !message;
+}
+
 function isFirebaseAvailable() {
   return Boolean(db && auth && navigator && navigator.onLine !== false);
 }
 
-async function withFirebaseTimeout(task, timeoutMs = 1500) {
+async function withFirebaseTimeout(task, timeoutMs = 30000) {
   if (!isFirebaseAvailable()) {
     throw new Error('Firebase unavailable');
   }
@@ -133,11 +263,22 @@ async function withFirebaseTimeout(task, timeoutMs = 1500) {
 }
 
 async function loadFirebaseData() {
+  if (auth && !authStateReady) {
+    await authStateReadyPromise;
+  }
+
   if (!isFirebaseAvailable() || firebaseSyncInFlight) return;
 
   firebaseSyncInFlight = true;
 
   try {
+    const publicContentRef = db.collection('siteContent').doc('public');
+    const publicContentSnapshot = await withFirebaseTimeout(() => publicContentRef.get());
+    if (publicContentSnapshot.exists) {
+      state.content = { ...state.content, ...publicContentSnapshot.data() };
+      persistStorage(STORAGE_KEYS.content, state.content);
+    }
+
     const recipesSnapshot = await withFirebaseTimeout(() => db.collection('recipes').where('status', '==', 'published').get());
     const recipes = recipesSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
     if (recipes.length) {
@@ -145,19 +286,46 @@ async function loadFirebaseData() {
       persistStorage(STORAGE_KEYS.recipes, recipes);
     }
 
-    const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
-    if (contentSnapshot.exists) {
-      const firebaseContent = contentSnapshot.data();
-      state.content = { ...state.content, ...firebaseContent };
-      if (Array.isArray(firebaseContent.kklubEmails)) {
-        persistKklubEmails(firebaseContent.kklubEmails);
+    if (auth && auth.currentUser) {
+      const contentSnapshot = await withFirebaseTimeout(() => db.collection('siteContent').doc('main').get());
+      if (contentSnapshot.exists) {
+        const firebaseContent = contentSnapshot.data();
+        state.content = { ...state.content, ...firebaseContent };
+        if (firebaseContent.roleConfig) {
+          state.roleConfig = {
+            ownerEmails: Array.isArray(firebaseContent.roleConfig.ownerEmails) ? firebaseContent.roleConfig.ownerEmails : [],
+            adminEmails: Array.isArray(firebaseContent.roleConfig.adminEmails) ? firebaseContent.roleConfig.adminEmails : [],
+            kklubEmails: Array.isArray(firebaseContent.roleConfig.kklubEmails) ? firebaseContent.roleConfig.kklubEmails : []
+          };
+          persistStorage('kkooks-role-config', state.roleConfig);
+        }
+        if (Array.isArray(firebaseContent.kklubEmails)) {
+          state.kklubEmails = [...new Set(firebaseContent.kklubEmails.map(normalizeEmail).filter(Boolean))].sort();
+          persistStorage('kkooks-kklub-emails', state.kklubEmails);
+        }
+        if (Array.isArray(firebaseContent.kklubRequests)) {
+          state.kklubRequests = firebaseContent.kklubRequests;
+          persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+        }
+        persistStorage(STORAGE_KEYS.content, state.content);
+
+        if (!publicContentSnapshot.exists && canAccessAdminDashboard(auth.currentUser)) {
+          try {
+            await withFirebaseTimeout(() => publicContentRef.set(getPublicSiteContent(firebaseContent)));
+          } catch (error) {
+            console.warn('Public homepage content could not be initialized.', error);
+          }
+        }
       }
-      persistStorage(STORAGE_KEYS.content, state.content);
     }
   } catch (error) {
     console.warn('Firebase sync skipped because the client is offline or slow.', error);
+    if (error && error.code) {
+      showNotice(`Firebase sync failed: ${getFirebaseErrorMessage(error, 'Unable to load shared data.')}`);
+    }
   } finally {
     firebaseSyncInFlight = false;
+    renderApp();
   }
 }
 
@@ -176,55 +344,217 @@ async function saveRecipeToFirebase(recipe) {
 }
 
 async function saveSiteContentToFirebase() {
-  if (!db || !navigator.onLine) return;
+  if (!db || !auth || !auth.currentUser || !navigator.onLine) {
+    throw new Error('You must be signed in and online to save shared Firebase data.');
+  }
 
-  await withFirebaseTimeout(() => db.collection('siteContent').doc('main').set({
-    ...state.content,
-    kklubEmails: state.kklubEmails,
-    updatedAt: serverTimestamp()
-  }, { merge: true }));
+  await withFirebaseTimeout(() => Promise.all([
+    db.collection('siteContent').doc('main').set({
+      ...state.content,
+      roleConfig: getRoleConfig(),
+      kklubEmails: state.kklubEmails,
+      kklubRequests: state.kklubRequests,
+      updatedAt: serverTimestamp()
+    }, { merge: true }),
+    db.collection('siteContent').doc('public').set({
+      ...getPublicSiteContent(),
+      updatedAt: serverTimestamp()
+    }, { merge: true })
+  ]));
 }
 
 function isOwnerUser(user = null) {
-  return Boolean(user && user.email && OWNER_EMAILS.includes(normalizeEmail(user.email)));
+  return Boolean(user && user.email && (getUserRoleByEmail(user.email) === ACCOUNT_ROLES.OWNER || getUserRoleByEmail(user.email) === ACCOUNT_ROLES.CEO));
 }
 
 function isAdminUser(user = null) {
-  return Boolean(user && user.email && ADMIN_EMAILS.includes(normalizeEmail(user.email)));
+  return Boolean(user && user.email && getRoleConfig().adminEmails.includes(normalizeEmail(user.email)));
 }
 
 function canAccessAdminDashboard(user = null) {
   if (!user || !user.email) return false;
+  if (!hasAnyRoleConfig()) return isOwnerUser(user);
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function getKklubEmails() {
   return state.kklubEmails || [];
 }
 
+function getKklubRequests() {
+  return Array.isArray(state.kklubRequests) ? state.kklubRequests : [];
+}
+
+function persistKklubRequests(list) {
+  state.kklubRequests = [...new Map((list || []).map((request) => [normalizeEmail(request.email), {
+    email: normalizeEmail(request.email),
+    requestedBy: normalizeEmail(request.requestedBy || ''),
+    requestedAt: request.requestedAt || new Date().toISOString(),
+    status: request.status || 'pending'
+  }])).values()];
+  persistStorage(STORAGE_KEYS.kklubRequests, state.kklubRequests);
+
+  if (db && navigator.onLine !== false) {
+    db.collection('siteContent').doc('main').set({
+      kklubRequests: state.kklubRequests,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save KKlub requests:', error);
+      showNotice(`KKlub request was not saved online: ${getFirebaseErrorMessage(error)}`);
+    });
+  }
+}
+
+function canManageKklubRequests(user = null) {
+  return Boolean(user && (isOwnerUser(user) || isAdminUser(user)));
+}
+
+function sendEmailToRecipients(recipients, subject, body) {
+  const targetEmails = (Array.isArray(recipients) ? recipients : [recipients])
+    .map(normalizeEmail)
+    .filter(Boolean);
+
+  if (!targetEmails.length) return;
+
+  const mailto = `mailto:${targetEmails.join(',')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
+}
+
+function sendRoleChangeEmail(email, previousRole, nextRole) {
+  const safeEmail = normalizeEmail(email);
+  if (!safeEmail) return;
+
+  const previousLabel = previousRole && previousRole !== 'user' ? previousRole : 'No access';
+  const nextLabel = nextRole && nextRole !== 'user' ? nextRole : 'User';
+  const roleRank = {
+    [ACCOUNT_ROLES.USER]: 0,
+    [ACCOUNT_ROLES.KKLUB]: 1,
+    [ACCOUNT_ROLES.ADMIN]: 2,
+    [ACCOUNT_ROLES.OWNER]: 3
+  };
+  const isUpgrade = (roleRank[nextRole] ?? 0) > (roleRank[previousRole] ?? 0);
+  const isDowngrade = (roleRank[nextRole] ?? 0) < (roleRank[previousRole] ?? 0);
+  const subject = isUpgrade
+    ? 'Congratulations on your new KKooks role'
+    : isDowngrade
+      ? 'An update to your KKooks role'
+      : 'Your KKooks role has changed';
+  const message = isUpgrade
+    ? `Congratulations! Your KKooks role has been upgraded from ${previousLabel} to ${nextLabel}. We are excited to have you take on this new level of access.`
+    : isDowngrade
+      ? `We are sorry to let you know that your KKooks role has changed from ${previousLabel} to ${nextLabel}. Thank you for being part of KKooks.`
+      : `Your KKooks role has changed from ${previousLabel} to ${nextLabel}.`;
+
+  sendEmailToRecipients(
+    safeEmail,
+    subject,
+    `Hi,\n\n${message}\n\nBest,\nKKooks team`
+  );
+}
+
+function requestKklubApproval(email, requestedBy) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedRequester = normalizeEmail(requestedBy);
+
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    showNotice('Enter a valid email address.');
+    return;
+  }
+
+  const pendingRequests = getKklubRequests();
+  if (pendingRequests.some((request) => normalizeEmail(request.email) === normalizedEmail && request.status !== 'rejected')) {
+    showNotice('A KKlub approval request is already pending for that email.');
+    return;
+  }
+
+  const nextRequest = {
+    email: normalizedEmail,
+    requestedBy: normalizedRequester,
+    requestedAt: new Date().toISOString(),
+    status: 'pending'
+  };
+
+  persistKklubRequests([...pendingRequests, nextRequest]);
+
+  const ownerEmails = getRoleConfig().ownerEmails;
+  sendEmailToRecipients(
+    ownerEmails,
+    'KKlub approval requested',
+    `A KKlub access request was submitted for ${normalizedEmail}.\nRequested by: ${normalizedRequester || 'Unknown admin'}.\nPlease open the admin dashboard and approve or reject the request.`
+  );
+
+  showNotice('KKlub access request sent to owners for approval.');
+  renderApp();
+}
+
+function approveKklubRequest(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const pendingRequests = getKklubRequests();
+  const matched = pendingRequests.find((request) => normalizeEmail(request.email) === normalizedEmail && request.status !== 'rejected');
+
+  if (!matched) {
+    showNotice('No pending KKlub request was found for that email.');
+    return;
+  }
+
+  const previousRole = getUserRoleByEmail(normalizedEmail);
+  assignRoleForEmail(normalizedEmail, ACCOUNT_ROLES.KKLUB);
+  persistKklubRequests(pendingRequests.filter((request) => normalizeEmail(request.email) !== normalizedEmail));
+  sendRoleChangeEmail(normalizedEmail, previousRole, ACCOUNT_ROLES.KKLUB);
+  showNotice('KKlub request approved.');
+  renderApp();
+}
+
+function rejectKklubRequest(email) {
+  const normalizedEmail = normalizeEmail(email);
+  const nextRequests = getKklubRequests().map((request) => normalizeEmail(request.email) === normalizedEmail ? { ...request, status: 'rejected' } : request);
+  persistKklubRequests(nextRequests);
+
+  const currentRole = getUserRoleByEmail(normalizedEmail);
+  if (currentRole === ACCOUNT_ROLES.KKLUB) {
+    assignRoleForEmail(normalizedEmail, ACCOUNT_ROLES.USER);
+  }
+
+  sendEmailToRecipients(
+    normalizedEmail,
+    'KKlub request update',
+    'Your KKooks KKlub request was not approved at this time. You will remain on your current access level unless another change is made.'
+  );
+
+  showNotice('KKlub request rejected.');
+  renderApp();
+}
+
 function persistKklubEmails(list) {
   state.kklubEmails = [...new Set((list || []).map(normalizeEmail).filter(Boolean))].sort();
   persistStorage('kkooks-kklub-emails', state.kklubEmails);
+
+  const config = getRoleConfig();
+  config.kklubEmails = [...new Set(state.kklubEmails)];
+  persistRoleConfig(config);
 
   if (db) {
     db.collection('siteContent').doc('main').set({
       kklubEmails: state.kklubEmails,
       updatedAt: serverTimestamp()
-    }, { merge: true }).catch((error) => console.error('Unable to save KKlub emails:', error));
+    }, { merge: true }).catch((error) => {
+      console.error('Unable to save KKlub emails:', error);
+      showNotice(`KKlub access was not saved online: ${getFirebaseErrorMessage(error)}`);
+    });
   }
 }
 
 function canContributeRecipes(user = null) {
   if (!user || !user.email) return false;
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function isKklubMember(user = null) {
   if (!user || !user.email) return false;
   const role = getUserRoleByEmail(user.email);
-  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER;
+  return role === ACCOUNT_ROLES.KKLUB || role === ACCOUNT_ROLES.ADMIN || role === ACCOUNT_ROLES.OWNER || role === ACCOUNT_ROLES.CEO;
 }
 
 function navigate(page) {
@@ -241,19 +571,26 @@ function getFilteredRecipes() {
   });
 }
 
+function getCurrentUser() {
+  if (auth && auth.currentUser) return auth.currentUser;
+  return state.currentUser;
+}
+
 function getAccountDestination() {
-  return auth && auth.currentUser ? 'account' : 'authentication';
+  return getCurrentUser() ? 'account' : 'authentication';
 }
 
 function buildHeader() {
+  const currentUser = getCurrentUser();
   const accountDestination = getAccountDestination();
-  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+  const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <header class="site-header">
       <div class="header-main">
         <button class="logo" type="button" data-go="home">
-          <span>♨</span>${escapeHtml(state.content.brand || 'KKooks')}
+          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
         </button>
 
         <form class="header-search" data-search-form>
@@ -275,20 +612,23 @@ function buildHeader() {
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
+        ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </nav>
     </header>
   `;
 }
 
 function buildFooter() {
+  const currentUser = getCurrentUser();
   const accountDestination = getAccountDestination();
-  const accountLabel = auth && auth.currentUser ? 'Account' : 'Log in / Sign up';
+  const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
+  const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <footer>
       <div class="footer-brand">
         <button class="logo" type="button" data-go="home">
-          <span>♨</span>${escapeHtml(state.content.brand || 'KKooks')}
+          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
         </button>
 
         <h3>Get our app</h3>
@@ -316,6 +656,7 @@ function buildFooter() {
         <h4>Account</h4>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
+        ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </div>
 
       <small class="copyright">© 2025 KKooks. Cook something good.</small>
@@ -473,7 +814,7 @@ function renderCreatePage() {
   return `
     <main class="create-page">
       <button class="logo" type="button" data-go="home">
-        <span>♨</span>KKooks
+        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
       </button>
 
       <section class="create-card">
@@ -561,11 +902,42 @@ function renderShopPage() {
 }
 
 function renderAdminPage() {
+  const currentUser = getCurrentUser();
+  const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
+  const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
+  const isAdmin = Boolean(currentUser && isAdminUser(currentUser));
+  const roleConfig = getRoleConfig();
+  const pendingKklubRequests = getKklubRequests().filter((request) => request.status !== 'rejected');
+
+  if (!canAdmin) {
+    return `
+      <main class="account-page">
+        <button class="logo" type="button" data-go="home">
+          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
+        </button>
+
+        <section class="account-card locked-card">
+          <span class="eyebrow">Restricted</span>
+          <h1>Admin access required.</h1>
+          <p>This dashboard is only available to KKooks admins and owners.</p>
+          <button type="button" class="primary-button" data-go="account">Back to account</button>
+        </section>
+      </main>
+    `;
+  }
+
+  const allManagedRoles = [
+    { email: PROTECTED_CEO_EMAIL, role: ACCOUNT_ROLES.CEO, protected: true },
+    ...roleConfig.ownerEmails.map((email) => ({ email, role: ACCOUNT_ROLES.OWNER })),
+    ...roleConfig.adminEmails.map((email) => ({ email, role: ACCOUNT_ROLES.ADMIN })),
+    ...roleConfig.kklubEmails.map((email) => ({ email, role: ACCOUNT_ROLES.KKLUB }))
+  ];
+
   return `
     <main class="admin-page">
       <header class="admin-bar">
         <button class="logo" type="button" data-go="home">
-          <span>♨</span>KKooks admin
+          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
         </button>
         <button class="secondary-button" type="button" data-go="home">View site</button>
       </header>
@@ -594,15 +966,85 @@ function renderAdminPage() {
           </label>
           <button class="primary-button" type="button" data-save-content>Save homepage</button>
         </div>
+
+        ${isOwner ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>User roles</h2>
+            <form data-role-form>
+              <label>
+                User email
+                <input name="email" type="email" placeholder="member@email.com" required />
+              </label>
+              <label>
+                Role
+                <select name="role">
+                  <option value="user">user</option>
+                  <option value="kklub">kklub</option>
+                  <option value="admin">admin</option>
+                  <option value="owner">owner</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Save role</button>
+            </form>
+
+            <div class="mini-grid" style="margin-top: 16px;">
+              ${allManagedRoles.length ? allManagedRoles.map((entry) => `
+                <div class="mini-item">
+                  <strong>${escapeHtml(entry.email)}</strong>
+                  <span>${escapeHtml(entry.role)}</span>
+                  ${entry.protected ? '<span>Protected</span>' : `<button type="button" class="secondary-button" data-remove-role="${escapeHtml(entry.email)}">Clear</button>`}
+                </div>
+              `).join('') : '<p>No roles assigned yet.</p>'}
+            </div>
+          </div>
+        ` : ''}
+
+        ${(isOwner || isAdmin) ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>KKlub requests</h2>
+            ${pendingKklubRequests.length ? pendingKklubRequests.map((request) => `
+              <div class="mini-item">
+                <strong>${escapeHtml(request.email)}</strong>
+                <div class="inline-actions">
+                  ${isOwner ? `<button type="button" class="primary-button" data-approve-kklub-request="${escapeHtml(request.email)}">Approve</button>` : ''}
+                  ${isOwner ? `<button type="button" class="secondary-button" data-reject-kklub-request="${escapeHtml(request.email)}">Reject</button>` : ''}
+                </div>
+              </div>
+            `).join('') : '<p>No pending KKlub requests.</p>'}
+          </div>
+        ` : ''}
+
+        ${(isOwner || isAdmin) ? `
+          <div class="admin-form" style="margin-top: 24px;">
+            <h2>KKlub access</h2>
+            <form data-kklub-form>
+              <label>
+                Add member email
+                <input name="email" type="email" placeholder="member@email.com" required />
+              </label>
+              <button class="primary-button" type="submit">Add KKlub member</button>
+            </form>
+
+            <div class="mini-grid" style="margin-top: 16px;">
+              ${getKklubEmails().length ? getKklubEmails().map((email) => `
+                <div class="mini-item">
+                  <strong>${escapeHtml(email)}</strong>
+                  <button type="button" class="secondary-button" data-remove-kklub="${escapeHtml(email)}">Remove</button>
+                </div>
+              `).join('') : '<p>No KKlub members added yet.</p>'}
+            </div>
+          </div>
+        ` : ''}
       </section>
     </main>
   `;
 }
 
 function renderAccountPage() {
-  const currentUser = auth ? auth.currentUser : null;
+  const currentUser = getCurrentUser();
   const role = currentUser && currentUser.email ? getUserRoleByEmail(currentUser.email) : 'guest';
   const kklubUnlocked = isKklubMember(currentUser);
+  const canAccessDashboard = Boolean(currentUser && canAccessAdminDashboard(currentUser));
 
   return `
     <main class="account-dashboard-page">
@@ -618,7 +1060,8 @@ function renderAccountPage() {
             <button type="button" class="${state.accountTab === 'overview' ? 'active' : ''}" data-account-tab="overview">Overview</button>
             <button type="button" class="${state.accountTab === 'favorites' ? 'active' : ''}" data-account-tab="favorites">Favorites</button>
             <button type="button" class="${state.accountTab === 'kklub' ? 'active' : ''}" data-account-tab="kklub">KKlub</button>
-            ${currentUser ? '<button type="button" data-go="authentication">Sign out / switch</button>' : '<button type="button" data-go="authentication">Sign in</button>'}
+            ${canAccessDashboard ? '<button type="button" data-go="admin">Admin dashboard</button>' : ''}
+            ${currentUser ? '<button type="button" data-sign-out>Sign out / switch</button>' : '<button type="button" data-go="authentication">Sign in</button>'}
           </nav>
         </aside>
 
@@ -688,12 +1131,38 @@ async function signInWithGoogle() {
   try {
     const provider = new window.firebase.auth.GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
-    await auth.signInWithPopup(provider);
+    const result = await auth.signInWithPopup(provider);
+    state.currentUser = result ? result.user || auth.currentUser : null;
+    ensureCurrentUserRole(state.currentUser);
+    showInlineAuthError('');
     showNotice('Signed in with Google.');
+    state.page = 'account';
+    renderApp();
     navigate('account');
   } catch (error) {
     console.error('Google sign-in failed:', error);
+    showInlineAuthError(error.message || 'Google sign-in failed.');
     showNotice(error.message || 'Google sign-in failed.');
+  }
+}
+
+async function signOutUser() {
+  if (!auth) {
+    showNotice('Firebase Auth is not configured.');
+    return;
+  }
+
+  try {
+    await auth.signOut();
+    state.currentUser = null;
+    authStateReady = true;
+    state.page = 'authentication';
+    state.authMode = 'login';
+    renderApp();
+    showNotice('Signed out.');
+  } catch (error) {
+    console.error('Sign out failed:', error);
+    showNotice(error.message || 'Unable to sign out.');
   }
 }
 
@@ -727,7 +1196,7 @@ function renderAuthenticationPage() {
   return `
     <main class="account-page">
       <button class="logo" type="button" data-go="home">
-        <span>♨</span>KKooks
+        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
       </button>
 
       <section class="account-card auth-card">
@@ -759,6 +1228,7 @@ function renderAuthenticationPage() {
               Email
               <input name="email" type="email" required />
             </label>
+            <div data-auth-error hidden></div>
             <button type="submit" class="primary-button">${config.buttonLabel}</button>
           </form>
         ` : `
@@ -773,6 +1243,7 @@ function renderAuthenticationPage() {
               <input name="password" type="password" minlength="6" required />
             </label>
 
+            <div data-auth-error hidden style="min-height: 20px; margin: 6px 0 12px; color: #ff9d9d; font-size: 0.92rem; font-weight: 600;"></div>
             <button type="submit" class="primary-button">${config.buttonLabel}</button>
           </form>
         `}
@@ -789,7 +1260,7 @@ function renderAccountPageOld() {
   return `
     <main class="account-page">
       <button class="logo" type="button" data-go="home">
-        <span>♨</span>KKooks
+        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
       </button>
 
       <section class="account-card">
@@ -820,22 +1291,34 @@ function renderAccountPageOld() {
 }
 
 function syncPageForAuthState(user) {
+  authStateReady = true;
+
   if (user) {
     state.page = state.page === 'authentication' ? 'account' : (state.page === 'home' ? 'home' : state.page);
     state.authMode = 'login';
     return;
   }
 
-  if (state.page === 'account') {
+  if (state.page === 'account' || state.page === 'admin') {
     state.page = 'authentication';
     state.authMode = 'login';
   }
 }
 
 function renderApp() {
-  if (state.page === 'account' && (!auth || !auth.currentUser)) {
+  const currentUser = getCurrentUser();
+
+  if (authStateReady && state.page === 'authentication' && currentUser) {
+    state.page = 'account';
+  }
+
+  if (authStateReady && state.page === 'account' && !currentUser) {
     state.page = 'authentication';
     state.authMode = 'login';
+  }
+
+  if (authStateReady && state.page === 'admin' && (!currentUser || !canAccessAdminDashboard(currentUser))) {
+    state.page = 'account';
   }
 
   const pageMarkup = {
@@ -852,6 +1335,10 @@ function renderApp() {
 
   document.querySelector('#app').innerHTML = `
     <div class="site-shell">
+      <div class="loading-indicator" data-loading-indicator ${state.loading ? '' : 'hidden'} role="status" aria-live="polite">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span data-loading-label>Loading.</span>
+      </div>
       ${buildHeader()}
       ${pageMarkup()}
       ${buildFooter()}
@@ -859,6 +1346,43 @@ function renderApp() {
   `;
 
   bindEvents();
+}
+
+function assignRoleForEmail(email, roleName) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    showNotice('Enter a valid email address.');
+    return;
+  }
+
+  if (normalizedEmail === PROTECTED_CEO_EMAIL) {
+    showNotice('The CEO role is protected and cannot be changed.');
+    return;
+  }
+
+  const previousRole = getUserRoleByEmail(normalizedEmail);
+
+  const config = getRoleConfig();
+  const normalizedRole = String(roleName || 'user');
+
+  config.ownerEmails = config.ownerEmails.filter((item) => item !== normalizedEmail);
+  config.adminEmails = config.adminEmails.filter((item) => item !== normalizedEmail);
+  config.kklubEmails = config.kklubEmails.filter((item) => item !== normalizedEmail);
+
+  if (normalizedRole === ACCOUNT_ROLES.OWNER) config.ownerEmails.push(normalizedEmail);
+  if (normalizedRole === ACCOUNT_ROLES.ADMIN) config.adminEmails.push(normalizedEmail);
+  if (normalizedRole === ACCOUNT_ROLES.KKLUB) config.kklubEmails.push(normalizedEmail);
+
+  persistRoleConfig(config);
+  state.kklubEmails = [...new Set([...state.kklubEmails.filter((item) => item !== normalizedEmail), ...(normalizedRole === ACCOUNT_ROLES.KKLUB ? [normalizedEmail] : [])])].sort();
+  persistStorage('kkooks-kklub-emails', state.kklubEmails);
+
+  if (previousRole !== normalizedRole) {
+    sendRoleChangeEmail(normalizedEmail, previousRole, normalizedRole);
+  }
+
+  showNotice(`Role updated to ${normalizedRole}.`);
+  renderApp();
 }
 
 function bindEvents() {
@@ -917,11 +1441,38 @@ function bindEvents() {
     if (status) status.textContent = 'You are on the list.';
   });
 
+  document.querySelector('[data-role-form]')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+
+    if (!isOwnerUser(getCurrentUser())) {
+      showNotice('Only owners can manage roles.');
+      return;
+    }
+
+    const formData = new FormData(event.target);
+    const email = normalizeEmail(formData.get('email'));
+    const roleName = String(formData.get('role') || 'user');
+    assignRoleForEmail(email, roleName);
+  });
+
+  document.querySelectorAll('[data-remove-role]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(getCurrentUser())) {
+        showNotice('Only owners can manage roles.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.removeRole);
+      assignRoleForEmail(email, 'user');
+    });
+  });
+
   document.querySelector('[data-kklub-form]')?.addEventListener('submit', (event) => {
     event.preventDefault();
 
-    if (!isOwnerUser(auth ? auth.currentUser : null)) {
-      showNotice('Only owners can manage KKlub invites.');
+    const currentUser = getCurrentUser();
+    if (!canManageKklubRequests(currentUser)) {
+      showNotice('Only owners and admins can manage KKlub access.');
       return;
     }
 
@@ -938,14 +1489,47 @@ function bindEvents() {
       return;
     }
 
+    if (!isOwnerUser(currentUser)) {
+      requestKklubApproval(email, currentUser ? currentUser.email : 'admin');
+      return;
+    }
+
     persistKklubEmails([...getKklubEmails(), email]);
     showNotice('KKlub invite added.');
     renderApp();
   });
 
+  document.querySelectorAll('[data-approve-kklub-request]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(getCurrentUser())) {
+        showNotice('Only owners can approve KKlub requests.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.approveKklubRequest);
+      if (!email) return;
+
+      approveKklubRequest(email);
+    });
+  });
+
+  document.querySelectorAll('[data-reject-kklub-request]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (!isOwnerUser(getCurrentUser())) {
+        showNotice('Only owners can reject KKlub requests.');
+        return;
+      }
+
+      const email = normalizeEmail(button.dataset.rejectKklubRequest);
+      if (!email) return;
+
+      rejectKklubRequest(email);
+    });
+  });
+
   document.querySelectorAll('[data-remove-kklub]').forEach((button) => {
     button.addEventListener('click', () => {
-      if (!isOwnerUser(auth ? auth.currentUser : null)) {
+      if (!isOwnerUser(getCurrentUser())) {
         showNotice('Only owners can manage KKlub invites.');
         return;
       }
@@ -962,7 +1546,7 @@ function bindEvents() {
   document.querySelector('[data-create-form]')?.addEventListener('submit', async (event) => {
     event.preventDefault();
 
-    const currentUser = auth ? auth.currentUser : null;
+    const currentUser = getCurrentUser();
     if (!currentUser || !canContributeRecipes(currentUser)) {
       showNotice('Invite-only: only admins or KKlub members can contribute recipes.');
       return;
@@ -975,7 +1559,10 @@ function bindEvents() {
     const image = String(formData.get('image') || '').trim() || FALLBACK_IMAGE;
     const description = String(formData.get('description') || '').trim();
 
-    if (!title) return;
+    if (!title) {
+      showNotice('Enter a recipe name.');
+      return;
+    }
 
     const recipe = {
       title,
@@ -986,18 +1573,36 @@ function bindEvents() {
       status: 'published'
     };
 
-    if (db && auth && auth.currentUser) {
-      const saved = await saveRecipeToFirebase({ ...recipe, ownerId: auth.currentUser.uid });
-      state.recipes.unshift(saved);
-    } else {
-      state.recipes.unshift({
-        id: `recipe-${Date.now()}`,
-        ...recipe
-      });
+    let savedRecipe = {
+      id: `recipe-${Date.now()}`,
+      ...recipe
+    };
+
+    setLoading(true);
+    try {
+      if (db && auth && auth.currentUser && navigator.onLine !== false) {
+        savedRecipe = await saveRecipeToFirebase({ ...recipe, ownerId: auth.currentUser.uid });
+      }
+    } catch (error) {
+      console.error('Unable to publish recipe to Firebase; saving locally instead:', error);
+      showNotice('Online publishing failed, so the recipe was saved on this device.');
+    } finally {
+      setLoading(false);
     }
 
+    if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
+      showNotice('Recipe published.');
+    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
+      showNotice('Recipe saved.');
+    }
+
+    state.recipes.unshift(savedRecipe);
     persistStorage(STORAGE_KEYS.recipes, state.recipes);
-    showNotice('Recipe saved.');
+    if (savedRecipe.id && !String(savedRecipe.id).startsWith('recipe-')) {
+      showNotice('Recipe published.');
+    } else if (!document.querySelector('#notice')?.textContent.includes('saved on this device')) {
+      showNotice('Recipe saved.');
+    }
     navigate('recipes');
   });
 
@@ -1019,20 +1624,26 @@ function bindEvents() {
     }
 
     try {
+      let signedInUser = null;
+      showInlineAuthError('');
+
       if (state.authMode === 'signup') {
-        await auth.createUserWithEmailAndPassword(email, password);
+        signedInUser = await auth.createUserWithEmailAndPassword(email, password);
         showNotice('Account created.');
       } else if (state.authMode === 'login') {
-        await auth.signInWithEmailAndPassword(email, password);
+        signedInUser = await auth.signInWithEmailAndPassword(email, password);
         showNotice('Signed in successfully.');
       }
 
+      state.currentUser = signedInUser ? signedInUser.user || signedInUser : null;
+      ensureCurrentUserRole(state.currentUser);
       const destination = state.page === 'authentication' ? 'account' : 'home';
       state.page = destination;
       state.authMode = 'login';
       renderApp();
       navigate(destination);
     } catch (error) {
+      showInlineAuthError(error.message || 'Authentication failed.');
       showNotice(error.message || 'Authentication failed.');
     }
   });
@@ -1054,17 +1665,23 @@ function bindEvents() {
     }
 
     try {
+      showInlineAuthError('');
       await auth.sendPasswordResetEmail(email);
       showNotice('Password reset email sent.');
       state.authMode = 'login';
       renderApp();
     } catch (error) {
+      showInlineAuthError(error.message || 'Unable to send reset email.');
       showNotice(error.message || 'Unable to send reset email.');
     }
   });
 
   document.querySelector('[data-google-signin]')?.addEventListener('click', () => {
     signInWithGoogle();
+  });
+
+  document.querySelector('[data-sign-out]')?.addEventListener('click', () => {
+    signOutUser();
   });
 
   document.querySelector('[data-auth-switch]')?.addEventListener('click', () => {
@@ -1101,12 +1718,15 @@ function bindEvents() {
     state.content = { ...state.content, brand, heroLead: lead, heroAccent: accent, heroDescription: description };
     persistStorage(STORAGE_KEYS.content, state.content);
 
-    if (db) {
-      try {
-        await saveSiteContentToFirebase();
-      } catch (error) {
-        console.error('Unable to save content to Firebase:', error);
-      }
+    setLoading(true);
+    try {
+      await saveSiteContentToFirebase();
+    } catch (error) {
+      console.error('Unable to save content to Firebase:', error);
+      showNotice(`Homepage was not saved online: ${getFirebaseErrorMessage(error)}`);
+      return;
+    } finally {
+      setLoading(false);
     }
 
     showNotice('Homepage content saved.');
@@ -1116,7 +1736,13 @@ function bindEvents() {
 
 if (auth) {
   auth.onAuthStateChanged((user) => {
+    state.currentUser = user || null;
     syncPageForAuthState(user);
+    resolveAuthStateReady();
+
+    if (user) {
+      ensureCurrentUserRole(user);
+    }
 
     if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
       renderApp();
@@ -1140,5 +1766,8 @@ window.addEventListener('offline', () => {
 
 renderApp();
 if (navigator.onLine) {
-  loadFirebaseData().catch((error) => console.warn('Firebase sync skipped.', error));
+  setLoading(true);
+  loadFirebaseData()
+    .catch((error) => console.warn('Firebase sync skipped.', error))
+    .finally(() => setLoading(false));
 }

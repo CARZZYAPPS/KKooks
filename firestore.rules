@@ -1,0 +1,121 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null && request.auth.token.email is string;
+    }
+
+    function isProtectedOwner() {
+      return signedIn()
+        && request.auth.token.email == 'carzzyapps@gmail.com';
+    }
+
+    function isOwner() {
+      return signedIn() && (
+        isProtectedOwner()
+        || (resource.data.roleConfig is map
+          && resource.data.roleConfig.ownerEmails is list
+          && resource.data.roleConfig.ownerEmails.hasAny([request.auth.token.email]))
+      );
+    }
+
+    function isAdminOrOwner() {
+      return isOwner() || (signedIn()
+        && resource.data.roleConfig is map
+        && resource.data.roleConfig.adminEmails is list
+        && resource.data.roleConfig.adminEmails.hasAny([request.auth.token.email]));
+    }
+
+    function canManageHomepage() {
+      let mainPath = /databases/$(database)/documents/siteContent/main;
+      let roleConfig = exists(mainPath) ? get(mainPath).data.get('roleConfig', {}) : {};
+      return signedIn() && (isProtectedOwner()
+        || (roleConfig is map
+          && roleConfig.ownerEmails is list
+          && roleConfig.ownerEmails.hasAny([request.auth.token.email]))
+        || (roleConfig is map
+          && roleConfig.adminEmails is list
+          && roleConfig.adminEmails.hasAny([request.auth.token.email])));
+    }
+
+    function roleConfigUnchanged() {
+      return request.resource.data.get('roleConfig', {})
+        == resource.data.get('roleConfig', {});
+    }
+
+    function isHomepageOnlyUpdate() {
+      return roleConfigUnchanged()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'updatedAt'
+        ]);
+    }
+
+    function isKklubRequestAppend() {
+      let oldRequests = resource.data.get('kklubRequests', []);
+      let newRequests = request.resource.data.get('kklubRequests', []);
+      let newRequest = newRequests[oldRequests.size()];
+      return oldRequests is list
+        && newRequests is list
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'kklubRequests', 'updatedAt'
+        ])
+        && newRequests.size() == oldRequests.size() + 1
+        && newRequests.hasAll(oldRequests)
+        && newRequest is map
+        && newRequest.keys().hasOnly(['email', 'requestedBy', 'requestedAt', 'status'])
+        && newRequest.get('email', '') is string
+        && newRequest.get('requestedBy', '') == request.auth.token.email
+        && newRequest.get('requestedAt', '') is string
+        && newRequest.get('status', '') == 'pending'
+        && (newRequest.get('email', '') == request.auth.token.email || isAdminOrOwner());
+    }
+
+    // Published recipes are public. Only signed-in users can create recipes,
+    // and only the original creator can edit or delete one.
+    match /recipes/{recipeId} {
+      allow read: if resource.data.status == 'published' || request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if request.auth != null
+        && resource.data.ownerId == request.auth.uid;
+    }
+
+    // The app writes each signed-in user's profile here.
+    match /users/{userId} {
+      allow read, write: if request.auth != null
+        && request.auth.uid == userId;
+    }
+
+    // Newsletter signup only needs a one-way create from the public site.
+    match /newsletterSubscribers/{subscriberId} {
+      allow create: if true;
+      allow read, update, delete: if false;
+    }
+
+    // Guests can read the homepage projection, but role and membership data
+    // remain in the signed-in-only main document.
+    match /siteContent/public {
+      allow read: if true;
+      allow create, update: if canManageHomepage()
+        && request.resource.data.keys().hasOnly([
+          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // Role assignments and KKlub membership are owner-managed. Admins can edit
+    // homepage content, while signed-in users can only append their own request.
+    match /siteContent/main {
+      allow read: if signedIn();
+      allow create: if isProtectedOwner()
+        && request.resource.data.roleConfig is map
+        && request.resource.data.roleConfig.ownerEmails is list
+        && request.resource.data.roleConfig.ownerEmails.hasAny([request.auth.token.email]);
+      allow update: if isOwner()
+        || (isAdminOrOwner() && isHomepageOnlyUpdate())
+        || (signedIn() && isKklubRequestAppend());
+      allow delete: if false;
+    }
+  }
+}
