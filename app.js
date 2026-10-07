@@ -686,10 +686,6 @@ function buildFooter() {
   return `
     <footer>
       <div class="footer-brand">
-        <button class="logo" type="button" data-go="home">
-          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-        </button>
-
         <h3>Get our app</h3>
         <div class="app-links">
           <a href="https://apps.apple.com" target="_blank" rel="noreferrer">Download on the App Store</a>
@@ -748,6 +744,10 @@ function renderHomePage() {
 
   return `
     <main>
+      <div class="home-logo-wrap">
+        <img class="home-page-logo" src="KKOOKS%20LOGO.svg" alt="KKooks" />
+      </div>
+
       <section class="hero">
         <div class="hero-glow"></div>
         <span class="eyebrow">✦ KOSHER COOKING, REIMAGINED</span>
@@ -877,10 +877,6 @@ function renderCreatePage() {
 
   return `
     <main class="create-page">
-      <button class="logo" type="button" data-go="home">
-        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-      </button>
-
       <section class="create-card">
         <span class="eyebrow">Your kitchen</span>
         <h1>Share a recipe.</h1>
@@ -989,10 +985,6 @@ function renderAdminPage() {
   if (!canAdmin) {
     return `
       <main class="account-page">
-        <button class="logo" type="button" data-go="home">
-          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-        </button>
-
         <section class="account-card locked-card">
           <span class="eyebrow">Restricted</span>
           <h1>Admin access required.</h1>
@@ -1013,9 +1005,6 @@ function renderAdminPage() {
   return `
     <main class="admin-page">
       <header class="admin-bar">
-        <button class="logo" type="button" data-go="home">
-          <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-        </button>
         <button class="secondary-button" type="button" data-go="home">View site</button>
       </header>
 
@@ -1277,10 +1266,6 @@ function renderAuthenticationPage() {
 
   return `
     <main class="account-page">
-      <button class="logo" type="button" data-go="home">
-        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-      </button>
-
       <section class="account-card auth-card">
         <span class="eyebrow">Your kitchen</span>
         <h1>${config.title}</h1>
@@ -1348,10 +1333,6 @@ function renderAuthenticationPage() {
 function renderAccountPageOld() {
   return `
     <main class="account-page">
-      <button class="logo" type="button" data-go="home">
-        <img src="KKOOKS%20LOGO.svg" alt="KKooks" />
-      </button>
-
       <section class="account-card">
         <span class="eyebrow">Your kitchen</span>
         <h1>${state.authMode === 'signup' ? 'Create your account.' : 'Welcome back.'}</h1>
