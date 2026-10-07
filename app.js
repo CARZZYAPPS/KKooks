@@ -702,7 +702,7 @@ function buildFooter() {
         ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
       </div>
 
-      <small class="copyright">© 2025 KKooks. Cook something good.</small>
+      <small class="copyright">© 2026 Carzzy Apps Group</small>
     </footer>
   `;
 }
