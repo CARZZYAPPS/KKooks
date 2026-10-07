@@ -410,6 +410,18 @@ async function saveSiteContentToFirebase() {
   ]));
 }
 
+async function saveNewsletterSubscriber(email) {
+  if (!db) {
+    throw new Error('Newsletter signup is unavailable right now.');
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  await db.collection('newsletterSubscribers').doc(normalizedEmail).set({
+    email: normalizedEmail,
+    subscribedAt: serverTimestamp()
+  }, { merge: true });
+}
+
 function isOwnerUser(user = null) {
   return Boolean(user && user.email && (getUserRoleByEmail(user.email) === ACCOUNT_ROLES.OWNER || getUserRoleByEmail(user.email) === ACCOUNT_ROLES.CEO));
 }
@@ -1313,6 +1325,13 @@ function renderAuthenticationPage() {
               <input name="password" type="password" minlength="6" required />
             </label>
 
+            ${state.authMode === 'signup' ? `
+              <label class="newsletter-opt-in">
+                <input type="checkbox" name="newsletterOptIn" checked />
+                <span>Sign me up for exclusive emails, recipes, and updates.</span>
+              </label>
+            ` : ''}
+
             <div data-auth-error hidden style="min-height: 20px; margin: 6px 0 12px; color: #ff9d9d; font-size: 0.92rem; font-weight: 600;"></div>
             <button type="submit" class="primary-button">${config.buttonLabel}</button>
           </form>
@@ -1513,10 +1532,7 @@ function bindEvents() {
     }
 
     try {
-      await db.collection('newsletterSubscribers').doc(email.toLowerCase()).set({
-        email: email.toLowerCase(),
-        subscribedAt: serverTimestamp()
-      }, { merge: true });
+      await saveNewsletterSubscriber(email);
     } catch (error) {
       console.error('Unable to save subscriber:', error);
       showNotice("We couldn't add you to the list. Please try again.");
@@ -1698,6 +1714,7 @@ function bindEvents() {
     const formData = new FormData(event.target);
     const email = String(formData.get('email') || '').trim();
     const password = String(formData.get('password') || '');
+    const wantsNewsletter = state.authMode === 'signup' && formData.get('newsletterOptIn') === 'on';
 
     if (!email || !password) {
       showNotice('Enter an email and password.');
@@ -1706,11 +1723,21 @@ function bindEvents() {
 
     try {
       let signedInUser = null;
+      let newsletterSignupFailed = false;
       showInlineAuthError('');
 
       if (state.authMode === 'signup') {
         signedInUser = await auth.createUserWithEmailAndPassword(email, password);
-        showNotice('Account created.');
+        if (wantsNewsletter) {
+          try {
+            await saveNewsletterSubscriber(email);
+          } catch (error) {
+            console.error('Account created, but newsletter signup failed:', error);
+            newsletterSignupFailed = true;
+            showNotice("Your account is ready, but we couldn't add you to the email list. You can subscribe from the homepage.");
+          }
+        }
+        if (!newsletterSignupFailed) showNotice('Account created.');
       } else if (state.authMode === 'login') {
         signedInUser = await auth.signInWithEmailAndPassword(email, password);
         showNotice('Signed in successfully.');
