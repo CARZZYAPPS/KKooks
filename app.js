@@ -54,7 +54,8 @@ const DEFAULT_CONTENT = {
   brand: 'KKooks',
   heroLead: 'Cook kosher.',
   heroAccent: 'Boldly.',
-  heroDescription: 'Fresh recipes, smart menus, and a community of home chefs - all in one dark, delicious place.'
+  heroDescription: 'Fresh recipes, smart menus, and a community of home chefs - all in one dark, delicious place.',
+  notFoundJoke: 'This page is half-baked. Let’s get you back to something delicious.'
 };
 
 function getPublicSiteContent(content = state.content) {
@@ -62,7 +63,8 @@ function getPublicSiteContent(content = state.content) {
     brand: content.brand ?? DEFAULT_CONTENT.brand,
     heroLead: content.heroLead ?? DEFAULT_CONTENT.heroLead,
     heroAccent: content.heroAccent ?? DEFAULT_CONTENT.heroAccent,
-    heroDescription: content.heroDescription ?? DEFAULT_CONTENT.heroDescription
+    heroDescription: content.heroDescription ?? DEFAULT_CONTENT.heroDescription,
+    notFoundJoke: content.notFoundJoke ?? DEFAULT_CONTENT.notFoundJoke
   };
 }
 
@@ -951,6 +953,19 @@ function renderShopPage() {
   `;
 }
 
+function renderNotFoundPage() {
+  return `
+    <main class="account-page">
+      <section class="account-card">
+        <span class="eyebrow">404 · Wrong table</span>
+        <h1>We couldn’t find that page.</h1>
+        <p>${escapeHtml(state.content.notFoundJoke || DEFAULT_CONTENT.notFoundJoke)}</p>
+        <button type="button" class="primary-button" data-go="home">Back to KKooks</button>
+      </section>
+    </main>
+  `;
+}
+
 function renderAdminPage() {
   const currentUser = getCurrentUser();
   const canAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
@@ -1013,6 +1028,10 @@ function renderAdminPage() {
           <label>
             Hero description
             <textarea rows="4" data-site-description>${escapeHtml(state.content.heroDescription || '')}</textarea>
+          </label>
+          <label>
+            404 page food joke
+            <input value="${escapeHtml(state.content.notFoundJoke || DEFAULT_CONTENT.notFoundJoke)}" data-site-not-found-joke />
           </label>
           <button class="primary-button" type="button" data-save-content>Save homepage</button>
         </div>
@@ -1382,6 +1401,7 @@ function renderApp() {
     home: renderHomePage,
     recipes: renderRecipesPage,
     shop: renderShopPage,
+    'not-found': renderNotFoundPage,
     account: renderAccountPage,
     authentication: renderAuthenticationPage,
     create: renderCreatePage,
@@ -1777,8 +1797,10 @@ function bindEvents() {
     const lead = document.querySelector('[data-site-lead]')?.value || state.content.heroLead || 'Cook kosher.';
     const accent = document.querySelector('[data-site-accent]')?.value || state.content.heroAccent || 'Boldly.';
     const description = document.querySelector('[data-site-description]')?.value || state.content.heroDescription || '';
+    const notFoundJoke = document.querySelector('[data-site-not-found-joke]')?.value.trim()
+      || DEFAULT_CONTENT.notFoundJoke;
 
-    state.content = { ...state.content, brand, heroLead: lead, heroAccent: accent, heroDescription: description };
+    state.content = { ...state.content, brand, heroLead: lead, heroAccent: accent, heroDescription: description, notFoundJoke };
     persistStorage(STORAGE_KEYS.content, state.content);
 
     setLoading(true);

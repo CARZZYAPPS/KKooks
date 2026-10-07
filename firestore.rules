@@ -68,7 +68,7 @@ service cloud.firestore {
     function isHomepageOnlyUpdate() {
       return roleConfigUnchanged()
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'updatedAt'
+          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'notFoundJoke', 'updatedAt'
         ]);
     }
 
@@ -120,7 +120,7 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if canManageHomepage()
         && request.resource.data.keys().hasOnly([
-          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'updatedAt'
+          'brand', 'heroLead', 'heroAccent', 'heroDescription', 'notFoundJoke', 'updatedAt'
         ]);
       allow delete: if false;
     }
