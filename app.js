@@ -744,10 +744,6 @@ function renderHomePage() {
 
   return `
     <main>
-      <div class="home-logo-wrap">
-        <img class="home-page-logo" src="KKOOKS%20LOGO.svg" alt="KKooks" />
-      </div>
-
       <section class="hero">
         <div class="hero-glow"></div>
         <span class="eyebrow">✦ KOSHER COOKING, REIMAGINED</span>
