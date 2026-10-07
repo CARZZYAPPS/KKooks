@@ -685,21 +685,6 @@ function buildFooter() {
 
   return `
     <footer>
-      <div class="footer-brand">
-        <h3>Get our app</h3>
-        <div class="app-links">
-          <a href="https://apps.apple.com" target="_blank" rel="noreferrer">Download on the App Store</a>
-          <a href="https://play.google.com" target="_blank" rel="noreferrer">Get it on Google Play</a>
-        </div>
-
-        <h3>Follow us on social media</h3>
-        <div class="socials">
-          <a href="https://instagram.com" target="_blank" rel="noreferrer">Instagram</a>
-          <a href="https://facebook.com" target="_blank" rel="noreferrer">Facebook</a>
-          <a href="https://youtube.com" target="_blank" rel="noreferrer">YouTube</a>
-        </div>
-      </div>
-
       <div>
         <h4>Explore</h4>
         <button type="button" data-go="home">Home</button>
