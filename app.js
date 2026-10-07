@@ -705,6 +705,7 @@ function buildFooter() {
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
+        <h4>Our Partners</h4>
       </div>
 
       <div>
