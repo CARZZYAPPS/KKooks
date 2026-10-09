@@ -955,13 +955,13 @@ function buildFooter() {
       <div>
         <h4>Contact</h4>
         <button type="button" data-go="contact">Contact Form</button>
-        <a href="mailto:carzzyapps@gmail.com">carzzyapps@gmail.com</a>
-        <span class="footer-contact-label">Email</span>
-        <a href="tel:+1-478-227-9992">(478) Carzzy-A (227999-2)</a>
-        <span class="footer-contact-label">Call or Text</span>
+        <a href="mailto:carzzyapps@gmail.com">Email</a>
+        <!--span class="footer-contact-label">Email</span-->
+        <a href="tel:+1-478-227-9992">Call or Text</a>
+        <!--span class="footer-contact-label">Call or Text</span-->
       </div>
 
-      <small class="copyright">© 2026 Carzzy Apps Group | </small>
+      <small class="copyright">© 2026 Carzzy Apps Group | Avis & DeBus</small>
     </footer>
   `;
 }
