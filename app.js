@@ -690,9 +690,6 @@ function buildFooter() {
         <button type="button" data-go="home">Home</button>
         <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
-        <h4>Our Partners</h4>
-        <a href="https://www.carzzyapps.com" target="_blank" rel="noopener noreferrer">Carzzy Apps</a>
-        <a href="https://kosherkitchenai.com" target="_blank" rel="noopener noreferrer">Kosher Kitchen AI</a>
       </div>
 
       <div>
@@ -700,6 +697,12 @@ function buildFooter() {
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
         ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
+      </div>
+
+      <div>
+        <h4>Our Partners</h4>
+        <a href="https://www.carzzyapps.com" target="_blank" rel="noopener noreferrer">Carzzy Apps</a>
+        <a href="https://kosherkitchenai.com" target="_blank" rel="noopener noreferrer">Kosher Kitchen AI</a>
       </div>
 
       <small class="copyright">© 2026 Carzzy Apps Group</small>
