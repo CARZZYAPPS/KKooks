@@ -1278,8 +1278,12 @@ function renderSiteCodePage() {
   const options = Object.entries(SITE_CODE_PAGES).map(([page, label]) => `
     <option value="${escapeHtml(page)}" ${page === state.siteCodeEditorPage ? 'selected' : ''}>${escapeHtml(label)}</option>
   `).join('');
-  const draft = state.siteCodeDrafts[state.siteCodeEditorPage]
-    || formatSiteCode(state.siteCodeOverrides[state.siteCodeEditorPage] || {});
+  const draft = Object.prototype.hasOwnProperty.call(state.siteCodeDrafts, state.siteCodeEditorPage)
+    ? state.siteCodeDrafts[state.siteCodeEditorPage]
+    : formatSiteCode(
+      state.siteCodeOverrides[state.siteCodeEditorPage]
+        || buildDefaultSiteCode(state.siteCodeEditorPage)
+    );
 
   return `
     <main class="admin-page site-code-page">
