@@ -73,12 +73,27 @@ const PAGE_MAP = {
   home: 'index.html',
   recipes: 'recipes.html',
   shop: 'shop.html',
+  contact: 'contact.html',
   account: 'account.html',
   authentication: 'auth.html',
   create: 'create.html',
   favorites: 'favorites.html',
   menus: 'menus.html',
-  admin: 'admin.html'
+  admin: 'admin.html',
+  'site-code': 'site-code.html'
+};
+const SITE_CODE_PAGES = {
+  home: 'Home',
+  recipes: 'Recipes',
+  shop: 'Shop',
+  contact: 'Contact',
+  account: 'Account',
+  authentication: 'Sign in',
+  create: 'Create recipe',
+  favorites: 'Favorites',
+  menus: 'Menus',
+  admin: 'Admin',
+  'not-found': 'Not found'
 };
 
 const state = {
@@ -94,11 +109,20 @@ const state = {
   kklubEmails: readStorage('kkooks-kklub-emails', []),
   roleConfig: readStorage('kkooks-role-config', DEFAULT_ROLE_CONFIG),
   kklubRequests: readStorage(STORAGE_KEYS.kklubRequests, []),
+  siteCodeOverrides: {},
+  siteCodeEditorPage: 'home',
+  siteCodeDrafts: {},
   loading: false
 };
 
 let firebaseSyncInFlight = false;
 let authStateReady = false;
+let roleConfigReady = !db;
+let activeSiteCodePage = '';
+let siteCodeScriptController = null;
+let siteCodeStyleElement = null;
+const siteCodeLoadedPages = new Set();
+const siteCodeLoadRequests = new Map();
 let loadingTimer = null;
 let resolveAuthStateReady;
 const authStateReadyPromise = new Promise((resolve) => {
@@ -372,6 +396,7 @@ async function loadFirebaseData() {
     }
   } finally {
     firebaseSyncInFlight = false;
+    roleConfigReady = true;
     renderApp();
   }
 }
@@ -428,6 +453,149 @@ function isOwnerUser(user = null) {
 
 function isAdminUser(user = null) {
   return Boolean(user && user.email && getRoleConfig().adminEmails.includes(normalizeEmail(user.email)));
+}
+
+function formatSiteCode(code = {}) {
+  const html = String(code.html || '');
+  const css = String(code.css || '');
+  const javascript = String(code.javascript || '');
+
+  return `${html}\n\n<style>\n${css}\n</style>\n\n<script>\n${javascript}\n</script>`;
+}
+
+function parseSiteCode(source) {
+  const styleMatch = source.match(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/i);
+  const scriptMatch = source.match(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/i);
+  let html = source;
+
+  if (styleMatch) html = html.replace(styleMatch[0], '');
+  if (scriptMatch) html = html.replace(scriptMatch[0], '');
+
+  return {
+    html: html.trim(),
+    css: styleMatch ? styleMatch[1].trim() : '',
+    javascript: scriptMatch ? scriptMatch[1].trim() : ''
+  };
+}
+
+function readSiteCodeOverride(page) {
+  if (!Object.prototype.hasOwnProperty.call(SITE_CODE_PAGES, page)) {
+    return Promise.reject(new Error('That page cannot be edited here.'));
+  }
+  if (!db || navigator.onLine === false) {
+    return Promise.reject(new Error('Page code requires an online Firebase connection.'));
+  }
+  if (siteCodeLoadRequests.has(page)) return siteCodeLoadRequests.get(page);
+
+  const request = withFirebaseTimeout(() => db.collection('siteCode').doc(page).get())
+    .then((snapshot) => {
+      const code = snapshot.exists
+        ? {
+          html: String(snapshot.data().html || ''),
+          css: String(snapshot.data().css || ''),
+          javascript: String(snapshot.data().javascript || '')
+        }
+        : null;
+      state.siteCodeOverrides[page] = code;
+      siteCodeLoadedPages.add(page);
+      return code;
+    })
+    .finally(() => siteCodeLoadRequests.delete(page));
+
+  siteCodeLoadRequests.set(page, request);
+  return request;
+}
+
+function loadSiteCodeOverrideForCurrentPage() {
+  const page = state.page;
+  if (page === 'site-code' || !Object.prototype.hasOwnProperty.call(SITE_CODE_PAGES, page)) return;
+  if (siteCodeLoadedPages.has(page) || siteCodeLoadRequests.has(page) || !db || navigator.onLine === false) return;
+
+  readSiteCodeOverride(page)
+    .then(() => {
+      if (state.page === page) renderApp();
+    })
+    .catch((error) => {
+      console.error(`Unable to load the ${page} page code override:`, error);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't load this page's saved code."));
+      siteCodeLoadedPages.add(page);
+    });
+}
+
+function applySiteCodeOverride() {
+  if (activeSiteCodePage !== state.page) {
+    if (siteCodeScriptController) siteCodeScriptController.abort();
+    siteCodeStyleElement?.remove();
+    siteCodeScriptController = null;
+    siteCodeStyleElement = null;
+    activeSiteCodePage = state.page;
+  }
+
+  if (state.page === 'site-code') return null;
+
+  if (!siteCodeLoadedPages.has(state.page)) {
+    loadSiteCodeOverrideForCurrentPage();
+    return null;
+  }
+
+  const code = state.siteCodeOverrides[state.page];
+  const main = document.querySelector('#app main');
+  if (!code || !main) return null;
+
+  if (code.html) main.innerHTML = code.html;
+
+  if (code.css) {
+    if (!siteCodeStyleElement) {
+      siteCodeStyleElement = document.createElement('style');
+      siteCodeStyleElement.dataset.siteCodeOverride = state.page;
+      document.head.append(siteCodeStyleElement);
+    }
+    siteCodeStyleElement.textContent = code.css;
+  } else {
+    siteCodeStyleElement?.remove();
+    siteCodeStyleElement = null;
+  }
+
+  if (siteCodeScriptController) siteCodeScriptController.abort();
+  siteCodeScriptController = code.javascript ? new AbortController() : null;
+
+  return code.javascript && siteCodeScriptController
+    ? { root: main, user: getCurrentUser(), signal: siteCodeScriptController.signal, source: code.javascript }
+    : null;
+}
+
+function runSiteCodeOverride(context) {
+  if (!context) return;
+
+  try {
+    new Function('root', 'user', 'signal', context.source)(context.root, context.user, context.signal);
+  } catch (error) {
+    console.error(`The saved JavaScript for ${state.page} could not run:`, error);
+    showNotice("The saved JavaScript couldn't run. Check the browser console for details.");
+  }
+}
+
+async function loadSiteCodeEditorPage(page, textarea, status) {
+  if (!isOwnerUser(getCurrentUser())) {
+    status.textContent = 'Owner access is required.';
+    return;
+  }
+
+  state.siteCodeEditorPage = page;
+  status.textContent = `Loading ${SITE_CODE_PAGES[page]} code…`;
+
+  try {
+    const code = await readSiteCodeOverride(page);
+    if (state.siteCodeEditorPage !== page || !textarea.isConnected) return;
+    textarea.value = Object.prototype.hasOwnProperty.call(state.siteCodeDrafts, page)
+      ? state.siteCodeDrafts[page]
+      : formatSiteCode(code || {});
+    status.textContent = code ? `${SITE_CODE_PAGES[page]} override loaded.` : `No ${SITE_CODE_PAGES[page]} override saved.`;
+  } catch (error) {
+    console.error(`Unable to load ${page} page code in the editor:`, error);
+    status.textContent = getFirebaseErrorMessage(error, "Couldn't load this page's code.");
+    showNotice(status.textContent);
+  }
 }
 
 function canAccessAdminDashboard(user = null) {
@@ -644,6 +812,7 @@ function buildHeader() {
   const accountDestination = getAccountDestination();
   const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
   const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
+  const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
 
   return `
     <header class="site-header">
@@ -672,6 +841,7 @@ function buildHeader() {
         <button type="button" data-go="recipes">Recipes</button>
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
+        ${isOwner ? '<button type="button" data-go="site-code">Code editor</button>' : ''}
       </nav>
     </header>
   `;
@@ -682,6 +852,7 @@ function buildFooter() {
   const accountDestination = getAccountDestination();
   const accountLabel = currentUser ? 'Account' : 'Log in / Sign up';
   const canViewAdmin = Boolean(currentUser && canAccessAdminDashboard(currentUser));
+  const isOwner = Boolean(currentUser && isOwnerUser(currentUser));
 
   return `
     <footer>
@@ -697,12 +868,20 @@ function buildFooter() {
         <button type="button" data-go="${accountDestination}">${escapeHtml(accountLabel)}</button>
         <button type="button" data-go="recipes">Browse recipes</button>
         ${canViewAdmin ? '<button type="button" data-go="admin">Admin</button>' : ''}
+        ${isOwner ? '<button type="button" data-go="site-code">Code editor</button>' : ''}
       </div>
 
       <div>
         <h4>Our Partners</h4>
         <a href="https://www.carzzyapps.com" target="_blank" rel="noopener noreferrer">Carzzy Apps</a>
         <a href="https://kosherkitchenai.com" target="_blank" rel="noopener noreferrer">Kosher Kitchen AI</a>
+      </div>
+
+      <div>
+        <h4>Contact</h4>
+        <button type="button" data-go="contact">Contact form</button>
+        <a href="mailto:carzzyapps@gmail.com">carzzyapps@gmail.com</a>
+        <a href="tel:+1-478-227-9992">(478) Carzzy-A (227999-2)</a>
       </div>
 
       <small class="copyright">© 2026 Carzzy Apps Group</small>
@@ -948,6 +1127,51 @@ function renderShopPage() {
   `;
 }
 
+function renderContactPage() {
+  return `
+    <main class="contact-page">
+      <section class="contact-intro">
+        <span class="eyebrow">CONTACT KKooks</span>
+        <h1>Let’s talk.</h1>
+        <p>Have a question, idea, or something delicious to share? Send us a note and we’ll be glad to hear from you.</p>
+      </section>
+
+      <section class="contact-card">
+        <div class="contact-details">
+          <span class="eyebrow">WE’RE HERE TO HELP</span>
+          <h2>Get in touch.</h2>
+          <p>For questions about recipes, your account, or the KKooks community, send us a message.</p>
+          <a href="mailto:carzzyapps@gmail.com">carzzyapps@gmail.com</a>
+          <p class="contact-response-note">Your message will be sent directly to our team.</p>
+        </div>
+
+          <form class="contact-form" action="https://formsubmit.co/carzzyapps@gmail.com" method="POST">
+            <input type="hidden" name="_subject" value="New KKooks contact message" />
+            <input type="hidden" name="_template" value="table" />
+            <input type="text" name="_honey" tabindex="-1" autocomplete="off" aria-hidden="true" class="contact-honeypot" />
+            <label>
+              Your name
+              <input name="name" autocomplete="name" required maxlength="120" placeholder="Name" />
+          </label>
+          <label>
+            Your email
+            <input name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@example.com" />
+          </label>
+          <label>
+            Subject
+            <input name="subject" required maxlength="160" placeholder="What can we help with?" />
+          </label>
+          <label>
+            Message
+            <textarea name="message" rows="6" required maxlength="5000" placeholder="Write your message here…"></textarea>
+          </label>
+          <button class="primary-button" type="submit">Send message</button>
+        </form>
+      </section>
+    </main>
+  `;
+}
+
 function renderNotFoundPage() {
   return `
     <main class="account-page">
@@ -956,6 +1180,60 @@ function renderNotFoundPage() {
         <h1>We couldn’t find that page.</h1>
         <p>${escapeHtml(state.content.notFoundJoke || DEFAULT_CONTENT.notFoundJoke)}</p>
         <button type="button" class="primary-button" data-go="home">Back to KKooks</button>
+      </section>
+    </main>
+  `;
+}
+
+function renderSiteCodePage() {
+  if (!isOwnerUser(getCurrentUser())) {
+    return `
+      <main class="account-page">
+        <section class="account-card locked-card">
+          <span class="eyebrow">Restricted</span>
+          <h1>Owner access required.</h1>
+          <p>This code editor is only available to KKooks owners.</p>
+          <button type="button" class="primary-button" data-go="account">Back to account</button>
+        </section>
+      </main>
+    `;
+  }
+
+  const options = Object.entries(SITE_CODE_PAGES).map(([page, label]) => `
+    <option value="${escapeHtml(page)}" ${page === state.siteCodeEditorPage ? 'selected' : ''}>${escapeHtml(label)}</option>
+  `).join('');
+  const draft = state.siteCodeDrafts[state.siteCodeEditorPage]
+    || formatSiteCode(state.siteCodeOverrides[state.siteCodeEditorPage] || {});
+
+  return `
+    <main class="admin-page site-code-page">
+      <header class="admin-bar">
+        <button class="secondary-button" type="button" data-go="admin">Admin dashboard</button>
+        <button class="secondary-button" type="button" data-go="home">View site</button>
+      </header>
+
+      <section class="admin-workspace">
+        <span class="eyebrow">Owner-only editor</span>
+        <h1>Edit a page.</h1>
+        <p>Choose a page, then edit its HTML, CSS, and JavaScript together in one code block.</p>
+
+        <div class="site-code-warning" role="note">
+          Saved code is published immediately and runs for site visitors. JavaScript can access the page and its data.
+          Only save code you trust. This creates a live page override; it does not edit the checked-in source files.
+        </div>
+
+        <div class="site-code-editor">
+          <label for="site-code-page">Page</label>
+          <select id="site-code-page" data-site-code-page>${options}</select>
+          <p class="site-code-status" data-site-code-status role="status" aria-live="polite">Choose a page to load its saved override.</p>
+          <label for="site-code-source">HTML, CSS, and JavaScript</label>
+          <textarea id="site-code-source" data-site-code-source spellcheck="false" autocapitalize="off" autocomplete="off">${escapeHtml(draft)}</textarea>
+          <p class="site-code-status">HTML replaces the selected page's existing main content. JavaScript receives <code>root</code>, <code>user</code>, and <code>signal</code>; use <code>{ signal }</code> for event listeners so they are cleaned up when the page redraws.</p>
+          <div class="site-code-actions">
+            <button class="primary-button" type="button" data-save-site-code>Publish code</button>
+            <button class="secondary-button" type="button" data-reset-site-code>Remove override</button>
+          </div>
+        </div>
       </section>
     </main>
   `;
@@ -993,6 +1271,7 @@ function renderAdminPage() {
     <main class="admin-page">
       <header class="admin-bar">
         <button class="secondary-button" type="button" data-go="home">View site</button>
+        ${isOwner ? '<button class="secondary-button" type="button" data-go="site-code">Edit page code</button>' : ''}
       </header>
 
       <section class="admin-workspace">
@@ -1356,7 +1635,7 @@ function syncPageForAuthState(user) {
     return;
   }
 
-  if (state.page === 'account' || state.page === 'admin') {
+  if (state.page === 'account' || state.page === 'admin' || state.page === 'site-code') {
     state.page = 'authentication';
     state.authMode = 'login';
   }
@@ -1380,6 +1659,10 @@ function renderApp() {
     state.page = 'account';
   }
 
+  if (authStateReady && roleConfigReady && state.page === 'site-code' && (!currentUser || !isOwnerUser(currentUser))) {
+    state.page = 'account';
+  }
+
   if (authStateReady && state.page === 'create' && !canContributeRecipes(currentUser)) {
     state.page = 'recipes';
   }
@@ -1388,13 +1671,15 @@ function renderApp() {
     home: renderHomePage,
     recipes: renderRecipesPage,
     shop: renderShopPage,
+    contact: renderContactPage,
     'not-found': renderNotFoundPage,
     account: renderAccountPage,
     authentication: renderAuthenticationPage,
     create: renderCreatePage,
     favorites: renderFavoritesPage,
     menus: renderMenusPage,
-    admin: renderAdminPage
+    admin: renderAdminPage,
+    'site-code': renderSiteCodePage
   }[state.page] || renderHomePage;
 
   if (appRoot && notice && appRoot.parentNode === document.body) {
@@ -1413,7 +1698,18 @@ function renderApp() {
     </div>
   `;
 
+  const siteCodeContext = applySiteCodeOverride();
   bindEvents();
+  runSiteCodeOverride(siteCodeContext);
+
+  if (state.page === 'site-code' && isOwnerUser(currentUser)) {
+    const pageSelect = document.querySelector('[data-site-code-page]');
+    const textarea = document.querySelector('[data-site-code-source]');
+    const status = document.querySelector('[data-site-code-status]');
+    if (pageSelect && textarea && status && !siteCodeLoadedPages.has(state.siteCodeEditorPage)) {
+      loadSiteCodeEditorPage(state.siteCodeEditorPage, textarea, status);
+    }
+  }
 }
 
 function assignRoleForEmail(email, roleName) {
@@ -1787,6 +2083,102 @@ function bindEvents() {
     });
   });
 
+  const siteCodePageSelect = document.querySelector('[data-site-code-page]');
+  const siteCodeTextarea = document.querySelector('[data-site-code-source]');
+  const siteCodeStatus = document.querySelector('[data-site-code-status]');
+
+  siteCodePageSelect?.addEventListener('change', () => {
+    if (!siteCodeTextarea || !siteCodeStatus) return;
+    const previousPage = state.siteCodeEditorPage;
+    state.siteCodeDrafts[previousPage] = siteCodeTextarea.value;
+    const nextPage = siteCodePageSelect.value;
+    if (!Object.prototype.hasOwnProperty.call(SITE_CODE_PAGES, nextPage)) return;
+    loadSiteCodeEditorPage(nextPage, siteCodeTextarea, siteCodeStatus);
+  });
+
+  siteCodeTextarea?.addEventListener('input', () => {
+    state.siteCodeDrafts[state.siteCodeEditorPage] = siteCodeTextarea.value;
+  });
+
+  document.querySelector('[data-save-site-code]')?.addEventListener('click', async () => {
+    const currentUser = getCurrentUser();
+    if (!isOwnerUser(currentUser)) {
+      showNotice('Only an owner can publish page code.');
+      return;
+    }
+    if (!db || !auth || !auth.currentUser || navigator.onLine === false) {
+      showNotice('Page code publishing requires an owner account and an internet connection.');
+      return;
+    }
+
+    const page = state.siteCodeEditorPage;
+    const source = siteCodeTextarea?.value || '';
+    const code = parseSiteCode(source);
+    if (Object.values(code).some((part) => part.length > 60000)) {
+      showNotice('Each HTML, CSS, and JavaScript section must be 60,000 characters or fewer.');
+      return;
+    }
+
+    try {
+      if (code.javascript) new Function('root', 'user', 'signal', code.javascript);
+    } catch (error) {
+      console.error('The page JavaScript has a syntax error:', error);
+      showNotice('Fix the JavaScript syntax error before publishing.');
+      return;
+    }
+
+    if (!window.confirm(`Publish this ${SITE_CODE_PAGES[page]} override now? It will be visible to site visitors.`)) return;
+
+    setLoading(true);
+    try {
+      await withFirebaseTimeout(() => db.collection('siteCode').doc(page).set({
+        ...code,
+        updatedBy: currentUser.email,
+        updatedAt: serverTimestamp()
+      }));
+      state.siteCodeOverrides[page] = code;
+      state.siteCodeDrafts[page] = source;
+      siteCodeLoadedPages.add(page);
+      showNotice(`${SITE_CODE_PAGES[page]} code published.`);
+    } catch (error) {
+      console.error(`Unable to publish ${page} page code:`, error);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't publish the page code. Check that the latest Firestore rules are deployed."));
+    } finally {
+      setLoading(false);
+    }
+  });
+
+  document.querySelector('[data-reset-site-code]')?.addEventListener('click', async () => {
+    const currentUser = getCurrentUser();
+    if (!isOwnerUser(currentUser)) {
+      showNotice('Only an owner can remove page code.');
+      return;
+    }
+    if (!db || !auth || !auth.currentUser || navigator.onLine === false) {
+      showNotice('Removing a page override requires an owner account and an internet connection.');
+      return;
+    }
+
+    const page = state.siteCodeEditorPage;
+    if (!window.confirm(`Remove the saved ${SITE_CODE_PAGES[page]} override and restore the built-in page?`)) return;
+
+    setLoading(true);
+    try {
+      await withFirebaseTimeout(() => db.collection('siteCode').doc(page).delete());
+      state.siteCodeOverrides[page] = null;
+      state.siteCodeDrafts[page] = formatSiteCode();
+      siteCodeLoadedPages.add(page);
+      if (siteCodeTextarea) siteCodeTextarea.value = state.siteCodeDrafts[page];
+      if (siteCodeStatus) siteCodeStatus.textContent = `${SITE_CODE_PAGES[page]} override removed.`;
+      showNotice(`${SITE_CODE_PAGES[page]} override removed.`);
+    } catch (error) {
+      console.error(`Unable to remove ${page} page code:`, error);
+      showNotice(getFirebaseErrorMessage(error, "Couldn't remove the page override. Check that the latest Firestore rules are deployed."));
+    } finally {
+      setLoading(false);
+    }
+  });
+
   document.querySelector('[data-save-content]')?.addEventListener('click', async () => {
     const brand = document.querySelector('[data-site-brand]')?.value || state.content.brand || 'KKooks';
     const lead = document.querySelector('[data-site-lead]')?.value || state.content.heroLead || 'Cook kosher.';
@@ -1825,6 +2217,7 @@ if (auth) {
     }
 
     if (!user || !navigator.onLine || !db || firebaseSyncInFlight) {
+      roleConfigReady = true;
       renderApp();
       return;
     }

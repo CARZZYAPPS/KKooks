@@ -11,6 +11,37 @@ service cloud.firestore {
         && request.auth.token.email == 'carzzyapps@gmail.com';
     }
 
+    function isSiteOwner() {
+      let mainPath = /databases/$(database)/documents/siteContent/main;
+      let mainData = exists(mainPath) ? get(mainPath).data : {};
+      let roleConfig = mainData.get('roleConfig', {});
+      return signedIn() && (isProtectedOwner()
+        || (roleConfig is map
+          && roleConfig.ownerEmails is list
+          && roleConfig.ownerEmails.hasAny([request.auth.token.email])));
+    }
+
+    function validSiteCode(pageId) {
+      return pageId in [
+          'home', 'recipes', 'shop', 'account', 'authentication',
+          'contact', 'create', 'favorites', 'menus', 'admin', 'not-found'
+        ]
+        && request.resource.data.keys().hasOnly([
+          'html', 'css', 'javascript', 'updatedBy', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasAll([
+          'html', 'css', 'javascript', 'updatedBy', 'updatedAt'
+        ])
+        && request.resource.data.html is string
+        && request.resource.data.html.size() <= 60000
+        && request.resource.data.css is string
+        && request.resource.data.css.size() <= 60000
+        && request.resource.data.javascript is string
+        && request.resource.data.javascript.size() <= 60000
+        && request.resource.data.updatedBy == request.auth.token.email
+        && request.resource.data.updatedAt == request.time;
+    }
+
     function isOwner() {
       return signedIn() && (
         isProtectedOwner()
@@ -137,6 +168,18 @@ service cloud.firestore {
         || (isAdminOrOwner() && isHomepageOnlyUpdate())
         || (signedIn() && isKklubRequestAppend());
       allow delete: if false;
+    }
+
+    // Page overrides are public because the public site applies them at runtime.
+    // Only owners may publish, reset, or change a page override.
+    match /siteCode/{pageId} {
+      allow read: if true;
+      allow create, update: if isSiteOwner() && validSiteCode(pageId);
+      allow delete: if isSiteOwner()
+        && pageId in [
+          'home', 'recipes', 'shop', 'account', 'authentication',
+          'contact', 'create', 'favorites', 'menus', 'admin', 'not-found'
+        ];
     }
   }
 }
