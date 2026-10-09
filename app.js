@@ -478,6 +478,65 @@ function parseSiteCode(source) {
   };
 }
 
+function renderBuiltinPageMarkup(page) {
+  const renderers = {
+    home: renderHomePage,
+    recipes: renderRecipesPage,
+    shop: renderShopPage,
+    contact: renderContactPage,
+    'not-found': renderNotFoundPage,
+    account: renderAccountPage,
+    authentication: renderAuthenticationPage,
+    create: renderCreatePage,
+    favorites: renderFavoritesPage,
+    menus: renderMenusPage,
+    admin: renderAdminPage
+  };
+
+  return (renderers[page] || renderHomePage)();
+}
+
+function getStylesheetSource() {
+  const stylesheet = Array.from(document.styleSheets).find((item) => {
+    if (!item.href) return false;
+    return new URL(item.href, document.baseURI).pathname.endsWith('/styles.css');
+  });
+
+  if (!stylesheet) throw new Error('Could not find the site stylesheet.');
+
+  try {
+    return Array.from(stylesheet.cssRules, (rule) => rule.cssText).join('\n');
+  } catch (error) {
+    throw new Error('The site stylesheet cannot be read in this browser.', { cause: error });
+  }
+}
+
+function buildDefaultSiteCode(page) {
+  if (!Object.prototype.hasOwnProperty.call(SITE_CODE_PAGES, page)) {
+    throw new Error('That page cannot be edited here.');
+  }
+
+  const shellMarkup = `
+    <div class="site-shell">
+      <div class="loading-indicator" data-loading-indicator hidden role="status" aria-live="polite">
+        <span class="loading-spinner" aria-hidden="true"></span>
+        <span data-loading-label>Loading.</span>
+      </div>
+      ${buildHeader()}
+      ${renderBuiltinPageMarkup(page)}
+      ${buildFooter()}
+    </div>
+  `;
+  const parsedShell = new DOMParser().parseFromString(shellMarkup, 'text/html').querySelector('.site-shell');
+  if (!parsedShell) throw new Error(`Couldn't build the ${SITE_CODE_PAGES[page]} page source.`);
+
+  return {
+    html: parsedShell.outerHTML,
+    css: getStylesheetSource(),
+    javascript: '// Shared site behavior is loaded from app.js. Add page-specific JavaScript below.'
+  };
+}
+
 function readSiteCodeOverride(page) {
   if (!Object.prototype.hasOwnProperty.call(SITE_CODE_PAGES, page)) {
     return Promise.reject(new Error('That page cannot be edited here.'));
@@ -540,9 +599,22 @@ function applySiteCodeOverride() {
 
   const code = state.siteCodeOverrides[state.page];
   const main = document.querySelector('#app main');
-  if (!code || !main) return null;
+  const siteShell = document.querySelector('#app .site-shell');
+  if (!code || !main || !siteShell) return null;
 
-  if (code.html) main.innerHTML = code.html;
+  if (code.html) {
+    const parsedHtml = new DOMParser().parseFromString(code.html, 'text/html');
+    const overrideShell = parsedHtml.querySelector('.site-shell');
+    const overrideMain = parsedHtml.querySelector('main');
+
+    if (overrideShell) {
+      siteShell.replaceChildren(...Array.from(overrideShell.childNodes, (node) => document.importNode(node, true)));
+    } else if (overrideMain) {
+      main.replaceWith(document.importNode(overrideMain, true));
+    } else {
+      main.innerHTML = code.html;
+    }
+  }
 
   if (code.css) {
     if (!siteCodeStyleElement) {
@@ -560,7 +632,7 @@ function applySiteCodeOverride() {
   siteCodeScriptController = code.javascript ? new AbortController() : null;
 
   return code.javascript && siteCodeScriptController
-    ? { root: main, user: getCurrentUser(), signal: siteCodeScriptController.signal, source: code.javascript }
+    ? { root: document.querySelector('#app main') || siteShell, user: getCurrentUser(), signal: siteCodeScriptController.signal, source: code.javascript }
     : null;
 }
 
@@ -587,10 +659,13 @@ async function loadSiteCodeEditorPage(page, textarea, status) {
   try {
     const code = await readSiteCodeOverride(page);
     if (state.siteCodeEditorPage !== page || !textarea.isConnected) return;
+    const sourceCode = code || buildDefaultSiteCode(page);
     textarea.value = Object.prototype.hasOwnProperty.call(state.siteCodeDrafts, page)
       ? state.siteCodeDrafts[page]
-      : formatSiteCode(code || {});
-    status.textContent = code ? `${SITE_CODE_PAGES[page]} override loaded.` : `No ${SITE_CODE_PAGES[page]} override saved.`;
+      : formatSiteCode(sourceCode);
+    status.textContent = code
+      ? `${SITE_CODE_PAGES[page]} saved override loaded.`
+      : `Built-in ${SITE_CODE_PAGES[page]} HTML and CSS loaded.`;
   } catch (error) {
     console.error(`Unable to load ${page} page code in the editor:`, error);
     status.textContent = getFirebaseErrorMessage(error, "Couldn't load this page's code.");
@@ -879,12 +954,14 @@ function buildFooter() {
 
       <div>
         <h4>Contact</h4>
-        <button type="button" data-go="contact">Contact form</button>
+        <button type="button" data-go="contact">Contact Form</button>
         <a href="mailto:carzzyapps@gmail.com">carzzyapps@gmail.com</a>
+        <span class="footer-contact-label">Email</span>
         <a href="tel:+1-478-227-9992">(478) Carzzy-A (227999-2)</a>
+        <span class="footer-contact-label">Call or Text</span>
       </div>
 
-      <small class="copyright">© 2026 Carzzy Apps Group</small>
+      <small class="copyright">© 2026 Carzzy Apps Group | </small>
     </footer>
   `;
 }
@@ -1218,8 +1295,9 @@ function renderSiteCodePage() {
         <p>Choose a page, then edit its HTML, CSS, and JavaScript together in one code block.</p>
 
         <div class="site-code-warning" role="note">
-          Saved code is published immediately and runs for site visitors. JavaScript can access the page and its data.
-          Only save code you trust. This creates a live page override; it does not edit the checked-in source files.
+          The editor loads the page's rendered HTML shell and active stylesheet. Shared site behavior remains in app.js;
+          the JavaScript section is for page-specific code. Published overrides are public, run for visitors, and do not change checked-in source files.
+          Never put secrets or credentials here. Only publish code you trust.
         </div>
 
         <div class="site-code-editor">
@@ -1228,7 +1306,7 @@ function renderSiteCodePage() {
           <p class="site-code-status" data-site-code-status role="status" aria-live="polite">Choose a page to load its saved override.</p>
           <label for="site-code-source">HTML, CSS, and JavaScript</label>
           <textarea id="site-code-source" data-site-code-source spellcheck="false" autocapitalize="off" autocomplete="off">${escapeHtml(draft)}</textarea>
-          <p class="site-code-status">HTML replaces the selected page's existing main content. JavaScript receives <code>root</code>, <code>user</code>, and <code>signal</code>; use <code>{ signal }</code> for event listeners so they are cleaned up when the page redraws.</p>
+          <p class="site-code-status">The HTML shell replaces the selected page's rendered shell. CSS is added while that page is active. JavaScript receives <code>root</code>, <code>user</code>, and <code>signal</code>; use <code>{ signal }</code> for event listeners so they are cleaned up when the page redraws.</p>
           <div class="site-code-actions">
             <button class="primary-button" type="button" data-save-site-code>Publish code</button>
             <button class="secondary-button" type="button" data-reset-site-code>Remove override</button>
