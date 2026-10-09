@@ -577,7 +577,6 @@ function loadSiteCodeOverrideForCurrentPage() {
     .catch((error) => {
       console.error(`Unable to load the ${page} page code override:`, error);
       showNotice(getFirebaseErrorMessage(error, "Couldn't load this page's saved code."));
-      siteCodeLoadedPages.add(page);
     });
 }
 
@@ -2313,6 +2312,11 @@ if (auth) {
 
 window.addEventListener('offline', () => {
   firebaseSyncInFlight = false;
+});
+
+window.addEventListener('online', () => {
+  if (!siteCodeLoadedPages.has(state.page)) renderApp();
+  loadFirebaseData().catch((error) => console.error('Unable to refresh Firebase data after reconnecting:', error));
 });
 
 renderApp();
